@@ -1,6 +1,5 @@
 from PyPDF2 import PdfReader
 import docx2txt
-import os
 from spire.doc import *
 from spire.doc.common import *
 
