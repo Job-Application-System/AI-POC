@@ -12,6 +12,8 @@ class SimilarityModel:
     tokenizedCorpus: list[str]
     tokenizedSource: list[str]
 
+    SCORE_THRESHOLD = 0.1  # Threshold for individual similarity scores
+
     def __init__(self, jobDescription: str, resume: str, coverLetter: str):
         self.jobDescription = TextProcessor.normalize(jobDescription)
         self.resume = TextProcessor.normalize(resume)
@@ -184,11 +186,13 @@ class SimilarityModel:
         occurences_source = TextProcessor.getOccurences(self.tokenizedSource, self.tokenizedSource)
         occurences_target = TextProcessor.getOccurences(self.tokenizedCorpus, self.tokenizedCorpus)
         similarityFromNumOfWords = self.simiilarityFromNumOfWords(occurences_source, occurences_target, self.tokenizedCorpus)
-        return np.mean([
+        similarities = [
             similarityFromOccurences, 
             similarityFromCommonality, 
             similarityFromCosineSimilarity, 
             similarityFromCharacter, 
             similarityFromRatio, 
             similarityFromNumOfWords
-        ])
+        ]
+        filtered_similarities = [sim for sim in similarities if sim >= self.SCORE_THRESHOLD]
+        return np.mean(filtered_similarities) # reject individual invalid ones below threshold
