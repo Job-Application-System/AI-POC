@@ -3,3 +3,4 @@
 **/.ipynb_checkpoints
 **/logs
 **/__pycache__
+**/scraped_jobs/
