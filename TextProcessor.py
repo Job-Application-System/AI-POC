@@ -1,5 +1,6 @@
 from string import punctuation
 from word_tokenizer import WordTokenizer
+import emoji
 
 class TextProcessor:
     def getOccurences(targetText_split, sourceText_split):
@@ -24,13 +25,14 @@ class TextProcessor:
 
     def normalize(text: str) -> str:
         """
-        Normalizes text by removing punctuation and converting all characters to lowercase.
+        Normalizes text by removing emojis, punctuation and converting all characters to lowercase.
         Args:
             text (str): The text to be normalized.
 
         Returns:
             str: The normalized text.
         """
+        text = emoji.emojize(text)
         text = text.translate(str.maketrans('', '', punctuation)).replace("\t", "").replace("\n", "").replace("\r", "").lower()
         return text
 
