@@ -4,3 +4,5 @@
 **/logs
 **/__pycache__
 **/scraped_jobs/
+**/scraped_profiles/
+**/sample_resumes/
