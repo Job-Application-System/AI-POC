@@ -1,6 +1,7 @@
 from string import punctuation
 from word_tokenizer import WordTokenizer
 import emoji
+from langdetect import detect
 
 class TextProcessor:
     def getOccurences(targetText_split, sourceText_split):
@@ -32,7 +33,8 @@ class TextProcessor:
         Returns:
             str: The normalized text.
         """
-        text = emoji.emojize(text)
+        lang = detect(text)
+        text = emoji.demojize(text, language=lang)
         text = text.translate(str.maketrans('', '', punctuation)).replace("\t", "").replace("\n", "").replace("\r", "").lower()
         return text
 
