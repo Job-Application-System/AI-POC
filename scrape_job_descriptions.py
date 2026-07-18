@@ -2,6 +2,7 @@
 import sys
 from pathlib import Path
 import re
+import json
 from html import unescape
 CURR_DIR = Path(__file__).resolve().parent
 sys.path.append(str(CURR_DIR.parent / "LinkedIn-Scraper" / "free_scraper"))
@@ -61,17 +62,28 @@ def extract_job_descriptions(jobs: List[JobData | dict[str, Any]], save_results:
     JobData rows only include job_link, so those need a follow-up request.
     """
     descriptions: list[str] = []
+    descriptions_by_url: dict[str, str] = {}
     for job in jobs:
+        url = _job_url(job)
         saved_description = _saved_job_description(job)
         if saved_description:
             descriptions.append(saved_description)
+            if url:
+                descriptions_by_url[url] = saved_description
+                _set_job_description(job, saved_description)
             continue
 
-        url = _job_url(job)
         if not url:
             continue
         print(f"Accessing job description URL: {url}")
-        descriptions.append(fetch_job_description(url))
+        description = fetch_job_description(url)
+        descriptions.append(description)
+        descriptions_by_url[url] = description
+        _set_job_description(job, description)
+
+    if save_results and descriptions_by_url:
+        _save_job_descriptions(descriptions_by_url)
+
     return descriptions
 
 def _job_url(job: JobData | dict[str, Any]) -> str | None:
@@ -83,6 +95,9 @@ def _saved_job_description(job: JobData | dict[str, Any]) -> str | None:
     if not isinstance(job, dict):
         return None
 
+    if job.get("job_description"):
+        return job["job_description"]
+
     if job.get("job_summary"):
         return job["job_summary"]
 
@@ -92,6 +107,40 @@ def _saved_job_description(job: JobData | dict[str, Any]) -> str | None:
         return soup.get_text(separator="\n", strip=True)
 
     return None
+
+def _set_job_description(job: JobData | dict[str, Any], description: str) -> None:
+    if isinstance(job, dict):
+        job["job_description"] = description
+    else:
+        setattr(job, "job_description", description)
+
+def _save_job_descriptions(descriptions_by_url: dict[str, str]) -> None:
+    """
+    Add job_description to the saved JSON records that match the scraped job URLs.
+    """
+    SAVED_JOBS_DIR.mkdir(exist_ok=True)
+
+    for path in SAVED_JOBS_DIR.glob("*.json"):
+        with path.open("r", encoding="utf-8") as file:
+            saved_jobs = json.load(file)
+
+        if not isinstance(saved_jobs, list):
+            continue
+
+        updated = False
+        for saved_job in saved_jobs:
+            if not isinstance(saved_job, dict):
+                continue
+
+            url = _job_url(saved_job)
+            if url in descriptions_by_url:
+                saved_job["job_description"] = descriptions_by_url[url]
+                updated = True
+
+        if updated:
+            with path.open("w", encoding="utf-8") as file:
+                json.dump(saved_jobs, file, indent=2, ensure_ascii=False)
+                file.write("\n")
 
 def _job_posting_api_url(url: str) -> str:
     """
@@ -123,7 +172,7 @@ def main(save_results: bool = True):
     # Scrape jobs
     jobs = scrape_jobs(save_results=save_results)
     # Extract job descriptions
-    descriptions = extract_job_descriptions(jobs)
+    descriptions = extract_job_descriptions(jobs, save_results=save_results)
     return descriptions
 
 if __name__ == "__main__":
