@@ -24,7 +24,7 @@ class ContextManager:
     async def set_company_context(self) -> list[bool]:
         self.scraped_jobs = scrape_jobs(save_results=True, max_jobs=100)
         self.job_descriptions = extract_job_descriptions(self.scraped_jobs, save_results=True)
-        self.job_profiles = []
+        self.company_profiles = []
         rets = []
 
         for job in self.scraped_jobs:
@@ -48,7 +48,7 @@ class ContextManager:
                 company_profile = ""
 
             self._set_job_value(job, "company_profile", company_profile)
-            self.job_profiles.append(company_profile)
+            self.company_profiles.append(company_profile)
             rets.append(ret)
 
         return rets
@@ -188,6 +188,9 @@ class ContextManager:
         return ret
 
     def get_scraped_jobs(self):
+        for index, job in enumerate(self.scraped_jobs):
+            if index < len(self.company_profiles):
+                self._set_job_value(job, "company_profile", self.company_profiles[index])
         return self.scraped_jobs
 
     def get_user_profile(self):
