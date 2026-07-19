@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import json
 from html import unescape
+from urllib.parse import parse_qs, urlparse
 CURR_DIR = Path(__file__).resolve().parent
 sys.path.append(str(CURR_DIR.parent / "LinkedIn-Scraper" / "free_scraper"))
 from jobs_scraper import LinkedInJobsScraper, JobData, ScraperConfig
@@ -28,7 +29,8 @@ LOCATIONS = [
 ]
 SAVED_JOBS_DIR = CURR_DIR / "scraped_jobs"
 
-JOB_ID_PATTERN = re.compile(r"/jobs/view/(?:[^/?]+-)?(\d+)")
+JOB_ID_PATTERN = re.compile(r"/jobs/view/(?:[^/?#]+-)?(\d+)(?:[/?#]|$)")
+JOB_POSTING_API_PATTERN = re.compile(r"/jobs-guest/jobs/api/jobPosting/(\d+)(?:[/?#]|$)")
 
 def scrape_jobs(save_results: bool = True, max_jobs: int = 100) -> List[JobData]:
     """
@@ -150,10 +152,27 @@ def _job_posting_api_url(url: str) -> str:
     """
     Convert a public LinkedIn job URL to the guest job-posting endpoint.
     """
-    match = JOB_ID_PATTERN.search(url)
-    if not match:
+    job_id = _linkedin_job_id(url)
+    if not job_id:
         raise ValueError(f"Could not find a LinkedIn job id in URL: {url}")
-    return f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{match.group(1)}"
+    return f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
+
+def _linkedin_job_id(url: str) -> str | None:
+    """
+    Extract a LinkedIn job id from common free and BrightData URL shapes.
+    """
+    parsed_url = urlparse(url)
+    for param in ("currentJobId", "jobId"):
+        job_ids = parse_qs(parsed_url.query).get(param)
+        if job_ids and job_ids[0].isdigit():
+            return job_ids[0]
+
+    for pattern in (JOB_ID_PATTERN, JOB_POSTING_API_PATTERN):
+        match = pattern.search(url)
+        if match:
+            return match.group(1)
+
+    return None
 
 def fetch_job_description(url: str) -> str:
     """
