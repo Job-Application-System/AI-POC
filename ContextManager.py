@@ -7,12 +7,13 @@ from typing import Any
 CURR_DIR = Path(__file__).resolve().parent
 sys.path.append(str(CURR_DIR.parent / "LinkedIn-Scraper" / "free_scraper"))
 sys.path.append(str(CURR_DIR.parent / "LinkedIn-Scraper" / "linkedin_scraper_api_codes"))
-from scrape_job_descriptions import scrape_jobs, extract_job_descriptions
+from scrape_job_descriptions import scrape_jobs, extract_job_descriptions, LOCATIONS, KEYWORDS, SAVED_JOBS_DIR
 from profile_scraper import scrape # free method
 # Paid methods
 from linkedin_profile_by_url import LinkedInProfileInfo
 from linkedin_profile_by_name import LinkedInProfileDiscovery
 from linkedin_company_info_by_url import LinkedInCompanyInfo
+from linkedin_jobs_by_keyword import LinkedInJobsDiscovery
 from dotenv import load_dotenv
 from linkedin_scraper import RateLimitError, ProfileNotFoundError
 
@@ -21,15 +22,20 @@ class ContextManager:
     def __init__(self):
         load_dotenv()
 
-    async def set_company_context(self) -> list[bool]:
-        self.scraped_jobs = scrape_jobs(save_results=True, max_jobs=100)
+    async def set_company_context(self, max_jobs: int = 100) -> list[bool]:
+        self.scraped_jobs = scrape_jobs(save_results=True, max_jobs=max_jobs)
+        if not self.scraped_jobs:
+            # Fallback to Paid method
+            self.scraped_jobs = self._collect_paid_job_listing(max_job=max_jobs)
         self.job_descriptions = extract_job_descriptions(self.scraped_jobs, save_results=True)
         self.company_profiles = []
         rets = []
 
         for job in self.scraped_jobs:
+            company_url = self._get_job_value(job, "company_url")
             company = self._get_job_value(job, "company")
-            company_url = f"https://www.linkedin.com/company/{company}"
+            if not company_url and company:
+                company_url = f"https://www.linkedin.com/company/{company}"
             company_profile = None
             ret = False
 
@@ -53,6 +59,60 @@ class ContextManager:
 
         return rets
 
+    def _derive_country(self, location: str) -> str | None:
+        """
+        Derive the country code from the location string.
+        """
+        if any(country in location for country in ("CAN", "CA", "Canada")):
+            return "CA"
+        elif "UK" in location:
+            return "United Kingdom"
+        elif any(country in location for country in ("Hong Kong", "HK")):
+            return "Hong Kong"
+        else:
+            return None
+
+    def _collect_paid_job_listing(self, max_job: int = 100) -> list:
+        scraped_jobs = []
+        try:
+            self.discoverer = LinkedInJobsDiscovery(
+                api_token=os.getenv("BRIGHTDATA_APIKEY")
+            )
+            for keyword in KEYWORDS:
+                count = 0
+                for location in LOCATIONS:
+                    country = self._derive_country(location)
+                    search_criteria = [{
+                        "location": location,
+                        "keyword": keyword,
+                    }]
+                    if country:
+                        search_criteria[0]["country"] = country
+                    subcount = 1
+                    while count < max_job:
+                        filename = f"{str(SAVED_JOBS_DIR)}/linkedin_jobs_{keyword.replace('/', '_')}_{location.replace(' ', '_')}_{subcount}.json"
+                        ret = self.discoverer.discover_jobs(
+                            search_criteria=search_criteria,
+                            output=filename
+                        )
+                        # Parse the JSON file and append to scraped_jobs
+                        if ret:
+                            with open(filename, "r", encoding="utf-8") as f:
+                                jobs = json.load(f)
+                            if isinstance(jobs, dict):
+                                scraped_jobs.append(jobs)
+                                count += 1
+                            elif isinstance(jobs, list):
+                                scraped_jobs.extend(jobs)
+                                count += len(jobs)
+                            subcount += 1
+                        else:
+                            break
+                    scraped_jobs = scraped_jobs[:max_job]
+        except Exception:
+            self.discoverer = None
+        return scraped_jobs
+    
     def _collect_paid_company_profile(self, company_url: str) -> dict | list | None:
         try:
             self.collector = LinkedInCompanyInfo(
@@ -91,7 +151,27 @@ class ContextManager:
         return None
 
     def _get_job_value(self, job: Any, key: str):
-        return job.get(key) if isinstance(job, dict) else getattr(job, key)
+        aliases = {
+            "company": ("company", "company_name"),
+            "company_url": ("company_url",),
+            "title": ("title", "job_title"),
+            "location": ("location", "job_location"),
+            "job_link": ("job_link", "url"),
+            "posted_date": ("posted_date", "job_posted_time", "job_posted_date"),
+        }
+        keys = aliases.get(key, (key,))
+        if isinstance(job, dict):
+            for candidate in keys:
+                value = job.get(candidate)
+                if value:
+                    return value
+            return None
+
+        for candidate in keys:
+            value = getattr(job, candidate, None)
+            if value:
+                return value
+        return None
 
     def _set_job_value(self, job: Any, key: str, value) -> None:
         if isinstance(job, dict):

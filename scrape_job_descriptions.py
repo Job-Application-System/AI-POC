@@ -102,13 +102,13 @@ def _saved_job_description(job: JobData | dict[str, Any]) -> str | None:
     if job.get("job_description"):
         return job["job_description"]
 
-    if job.get("job_summary"):
-        return job["job_summary"]
-
     formatted_description = job.get("job_description_formatted")
     if formatted_description:
         soup = BeautifulSoup(unescape(formatted_description), "html.parser")
         return soup.get_text(separator="\n", strip=True)
+
+    if job.get("job_summary"):
+        return job["job_summary"]
 
     return None
 
