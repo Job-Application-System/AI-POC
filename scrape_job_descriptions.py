@@ -42,11 +42,15 @@ def scrape_jobs(save_results: bool = True, max_jobs: int = 100) -> List[JobData]
     for keyword in KEYWORDS:
         for location in LOCATIONS:
             print(f"\nScraping jobs for '{keyword}' in '{location}'...")
-            jobs: List[JobData] = scraper.scrape_jobs(
-                keywords=keyword, 
-                location=location, 
-                max_jobs=max_jobs
-            )
+            try:
+                jobs: List[JobData] = scraper.scrape_jobs(
+                    keywords=keyword, 
+                    location=location, 
+                    max_jobs=max_jobs
+                )
+            except Exception:
+                print(f"Error scraping jobs for '{keyword}' in '{location}'. Skipping...")
+                jobs = []
             jobs_list.extend(jobs)
             if save_results:
                 # Persist
