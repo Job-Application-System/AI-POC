@@ -39,7 +39,7 @@ class CoverLetterModel:
     def generate_cover_letter(self, job_description, resume, user_profile, company_profile):
         # Generate a cover letter using the LLM
         self.setup_skills()
-        self.base_prompt = f"""
+        self.system_prompt = f"""
             You are a professional cover letter writer helping an applicant to submit 
             a job application. You have access to the applicant's resume and LinkedIn profile.
 
@@ -48,7 +48,9 @@ class CoverLetterModel:
 
             Also refer to the applicant's LinkedIn profile for additional context:
             {user_profile}
+        """
 
+        self.user_prompt = f"""
             Generate a tailored cover letter for the following job description:
             {job_description}
 
@@ -56,18 +58,25 @@ class CoverLetterModel:
             {company_profile}
 
             Return only the cover letter without any additional text or explanations.
+        """
 
+        self.skills_prompt = f"""
             Skills to consider:
             {[f"{key}: {value}" for key, value in self.skills.items()]}
         """
 
         response = self.client.chat.completions.create(
             model="hy3",
+            # Split messages by role for better context management
             messages=[
                 {
                     "role": "system", 
-                    "content": self.base_prompt
+                    "content": f"self.base_prompt\n\n{self.skills_prompt}"
                 },
+                {
+                    "role": "user", 
+                    "content": self.user_prompt
+                }
             ],
             temperature=0.9,
             top_p=1.0,
