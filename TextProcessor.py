@@ -33,8 +33,14 @@ class TextProcessor:
         Returns:
             str: The normalized text.
         """
-        lang = detect(text)
-        text = emoji.demojize(text, language=lang if lang else "en")
+        try:
+            lang = detect(text)
+        except Exception:
+            lang = "en"
+        try:
+            text = emoji.demojize(text, language=lang if lang else "en")
+        except NotImplementedError:
+            text = emoji.demojize(text, language="en")
         text = text.translate(str.maketrans('', '', punctuation)).replace("\t", "").replace("\n", "").replace("\r", "").lower()
         return text
 

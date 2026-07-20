@@ -33,6 +33,8 @@ class SimilarityModel:
         occurences = TextProcessor.getOccurences(self.tokenizedCorpus, self.tokenizedSource)
         for key, value in occurences.items():
             similarity_scores.append(value)
+        if not self.tokenizedSource:
+            return 0.0
         return sum(similarity_scores) / len(self.tokenizedSource)
 
     def simiilarityFromNumOfWords(self, occurences_source, occurences_target, targetText_split):        
@@ -48,6 +50,8 @@ class SimilarityModel:
             float: The similarity score normalized by the total number of words in the target text.
         """
         totalNumOfWords_jobDesc = len(targetText_split) #number of words in target text
+        if totalNumOfWords_jobDesc == 0:
+            return 0.0
         valueSum = 0
         for occurence_source in occurences_source:
             key = occurence_source
@@ -123,6 +127,8 @@ class SimilarityModel:
         matchingChars = 0
         totalCharacters_ToCompare = len(occurences_toCompare)
         totalCharacters_FromSource = len(occurences_fromSource)
+        if totalCharacters_ToCompare + totalCharacters_FromSource == 0:
+            return 0.0
         #matching characters to Job Description
         for occurence in occurences_toCompare:
             if (occurence in occurences_fromSource):
@@ -156,10 +162,12 @@ class SimilarityModel:
                 np.ndarray: The vector representation of the text.
             """
             vector = [model.wv[word] for word in text if word in model.wv]
+            if not vector:
+                return np.zeros(model.vector_size)
             return sum(vector) / len(vector)
         
         model = Word2Vec(
-            sentences=self.tokenizedSource,
+            sentences=[self.tokenizedSource + self.tokenizedCorpus],
             vector_size=100,
             window=5,
             min_count=1,
@@ -167,7 +175,10 @@ class SimilarityModel:
         )
         vectorizedSource = np.array([get_vector(self.tokenizedSource, model)])
         vectorizedCorpus = np.array([get_vector(self.tokenizedCorpus, model)])
-        similarity = np.dot(vectorizedSource, vectorizedCorpus.T) / (np.linalg.norm(vectorizedSource) * np.linalg.norm(vectorizedCorpus))
+        denominator = np.linalg.norm(vectorizedSource) * np.linalg.norm(vectorizedCorpus)
+        if denominator == 0:
+            return 0.0
+        similarity = np.dot(vectorizedSource, vectorizedCorpus.T) / denominator
         return np.squeeze(similarity)
     
     def evaluateFinalScore(self):
@@ -177,22 +188,25 @@ class SimilarityModel:
         Returns:
             float: The final similarity score.
         """
-        similarityFromOccurences = self.simiilarityFromOccurences()
-        similarityFromCommonality = self.similarityByCommonality()
-        similarityFromCosineSimilarity = self.similarityByCosineSimilarity()
-        similarityFromCharacter = self.similarityByCharacter()
-        similarityFromRatio = self.similarityRatio()
-        # Num of Words
+        similarities = list(self.componentScores().values())
+        filtered_similarities = [sim for sim in similarities if sim >= self.SCORE_THRESHOLD]
+        if not filtered_similarities:
+            return 0.0
+        return np.mean(filtered_similarities) # reject individual invalid ones below threshold
+
+    def componentScores(self) -> dict[str, float]:
+        """
+        Returns each similarity component used by evaluateFinalScore.
+        """
         occurences_source = TextProcessor.getOccurences(self.tokenizedSource, self.tokenizedSource)
         occurences_target = TextProcessor.getOccurences(self.tokenizedCorpus, self.tokenizedCorpus)
-        similarityFromNumOfWords = self.simiilarityFromNumOfWords(occurences_source, occurences_target, self.tokenizedCorpus)
-        similarities = [
-            similarityFromOccurences, 
-            similarityFromCommonality, 
-            similarityFromCosineSimilarity, 
-            similarityFromCharacter, 
-            similarityFromRatio, 
-            similarityFromNumOfWords
-        ]
-        filtered_similarities = [sim for sim in similarities if sim >= self.SCORE_THRESHOLD]
-        return np.mean(filtered_similarities) # reject individual invalid ones below threshold
+        return {
+            "similarity_from_occurrences": float(self.simiilarityFromOccurences()),
+            "similarity_from_num_of_words": float(
+                self.simiilarityFromNumOfWords(occurences_source, occurences_target, self.tokenizedCorpus)
+            ),
+            "similarity_ratio": float(self.similarityRatio()),
+            "similarity_by_character": float(self.similarityByCharacter()),
+            "similarity_by_commonality": float(self.similarityByCommonality()),
+            "similarity_by_cosine": float(self.similarityByCosineSimilarity()),
+        }
