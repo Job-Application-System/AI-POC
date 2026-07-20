@@ -1,0 +1,9 @@
+working_dir: ./
+excludes: [
+  "/.git/",
+  "/third_party/Megatron-Bridge/.git/",
+  "/third_party/TransferQueue/.git/",
+  "**/__pycache__/",
+]
+env_vars:
+  PYTHONPATH: third_party/Megatron-Bridge/src:third_party/TransferQueue
