@@ -3,7 +3,8 @@ from typing import Iterable
 
 from openai import OpenAI
 
-class CoverLetterModel:
+
+class ResumeModel:
 
     def __init__(self):
         # Set up the LLM
@@ -12,12 +13,27 @@ class CoverLetterModel:
 
     def setup_skills(self):
         self.skills: dict = {
-            "Cover Letter's Nature": """
-                An advice to cover letter tailoring is that 
-                a cover letter usually mentions how the job applicant applied soft skills 
-                (like communication, problem-solving, and etc.) 
-                in his/her previous experiences, 
-                whereas a resume detailed technical skills and experiences. 
+            "Resume Tailoring": """
+                Tailor the resume to the job description while preserving the
+                applicant's factual background. Emphasize relevant skills,
+                responsibilities, outcomes, tools, and domain keywords already
+                supported by the resume or LinkedIn profile.
+            """,
+            "Factuality": """
+                Do not invent employers, degrees, certifications, dates, titles,
+                metrics, technologies, or responsibilities. Rewrite, reorder, and
+                emphasize existing facts instead of fabricating new ones.
+            """,
+            "ATS Optimization": """
+                Match important keywords from the job description where they are
+                truthful for the applicant. Keep the resume concise, scannable,
+                and suitable for applicant tracking systems.
+            """,
+            "Resume's Nature": """
+                An advice to resume tailoring is that 
+                a resume usually mentions how the job applicant applied hard **technical** skills 
+                from his/her responsibilities and experiences, 
+                whereas a cover letter details soft skills (like communication, problem-solving, and etc.). 
                 Remember not to write anything that does not align with the facts 
                 either stated on the resume or the linkedIn profile.            
             """,
@@ -25,7 +41,7 @@ class CoverLetterModel:
                 Follow this framework in your thought process:
 
                 Match **keywords in the job description** provided. 
-                Once you drafted the your response (e.g., the cover letter), check the followings:
+                Once you drafted the your response (e.g., this resume), check the followings:
                 (1) validating grammatical errors, and 
                 (2) two similarity scores (percentage %) based on a common technique used in ATS (Applicant Tracking System) systems (e.g., cosine similarity). 
                 One for just the comparison between your generated document versus the job description (wherever applicable). 
@@ -38,29 +54,30 @@ class CoverLetterModel:
                 Situation-Target/Task-Achievment/Action-Results (STAR). 
             """
         }
-    
-    def generate_cover_letter(self, job_description, resume, user_profile, company_profile):
-        # Generate a cover letter using the LLM
+
+    def generate_resume(self, job_description, resume, user_profile, company_profile):
+        # Generate a tailored resume using the LLM
         self.setup_skills()
         self.system_prompt = f"""
-            You are a professional cover letter writer helping an applicant to submit 
-            a job application. You have access to the applicant's resume and LinkedIn profile.
+            You are a professional resume writer helping an applicant submit a
+            job application. You have access to the applicant's original resume
+            and LinkedIn profile.
 
-            Refer to a generalized version of resume:
+            Original resume:
             {resume}
 
-            Also refer to the applicant's LinkedIn profile for additional context:
+            Applicant LinkedIn profile:
             {user_profile}
         """
 
         self.user_prompt = f"""
-            Generate a tailored cover letter for the following job description:
+            Customize the resume for the following job description:
             {job_description}
 
             Additionally, consider the company's profile and values:
             {company_profile}
 
-            Return only the cover letter without any additional text or explanations.
+            Return only the tailored resume without any additional text or explanations.
         """
 
         self.skills_prompt = f"""
@@ -70,20 +87,18 @@ class CoverLetterModel:
 
         response = self.client.chat.completions.create(
             model="hy3",
-            # Split messages by role for better context management
             messages=[
                 {
-                    "role": "system", 
-                    "content": f"self.base_prompt\n\n{self.skills_prompt}"
+                    "role": "system",
+                    "content": f"{self.system_prompt}\n\n{self.skills_prompt}",
                 },
                 {
-                    "role": "user", 
-                    "content": self.user_prompt
-                }
+                    "role": "user",
+                    "content": self.user_prompt,
+                },
             ],
-            temperature=0.9,
+            temperature=0.8,
             top_p=1.0,
-            # reasoning_effort: "no_think" (default, direct response), "low", "high" (deep chain-of-thought)
             extra_body={"chat_template_kwargs": {"reasoning_effort": "high"}},
         )
         print(f"Number of Tokens used: {response.usage.total_tokens}")
@@ -95,7 +110,7 @@ class CoverLetterModel:
         resume: Path | str = Path(__file__).resolve().parent / "sample_resumes",
         user_profile: Path | str = Path(__file__).resolve().parent / "scraped_profiles",
         company_profiles: Iterable[Path | str] | None = None,
-        output_dir: Path | str = Path(__file__).resolve().parent / "training_data" / "cover_letter_hy3",
+        output_dir: Path | str = Path(__file__).resolve().parent / "training_data" / "resume_hy3",
         verl_dir: Path | str = Path(__file__).resolve().parent / "verl",
         reward_path: Path | str = Path(__file__).resolve().parent / "cover_letter_reward.py",
         generate_candidates: bool = False,
@@ -110,10 +125,10 @@ class CoverLetterModel:
         reward_weight_trials: int = 25,
         ray_address: str | None = None,
     ):
-        from training_pipeline import COVER_LETTER_ABILITY, train_model_task
+        from training_pipeline import RESUME_ABILITY, train_model_task
 
         return train_model_task(
-            COVER_LETTER_ABILITY,
+            RESUME_ABILITY,
             jobs_dir=Path(jobs_dir),
             resume=Path(resume),
             user_profile=Path(user_profile),
@@ -140,7 +155,7 @@ class CoverLetterModel:
         resume: Path | str = Path(__file__).resolve().parent / "sample_resumes",
         user_profile: Path | str = Path(__file__).resolve().parent / "scraped_profiles",
         company_profiles: Iterable[Path | str] | None = None,
-        output_dir: Path | str = Path(__file__).resolve().parent / "training_data" / "cover_letter_hy3",
+        output_dir: Path | str = Path(__file__).resolve().parent / "training_data" / "resume_hy3",
         verl_dir: Path | str = Path(__file__).resolve().parent / "verl",
         reward_path: Path | str = Path(__file__).resolve().parent / "cover_letter_reward.py",
         generate_candidates: bool = True,
@@ -155,10 +170,10 @@ class CoverLetterModel:
         ray_address: str | None = None,
         submit: bool = False,
     ):
-        from training_pipeline import COVER_LETTER_ABILITY, train_model_task
+        from training_pipeline import RESUME_ABILITY, train_model_task
 
         return train_model_task(
-            COVER_LETTER_ABILITY,
+            RESUME_ABILITY,
             jobs_dir=Path(jobs_dir),
             resume=Path(resume),
             user_profile=Path(user_profile),
@@ -178,32 +193,3 @@ class CoverLetterModel:
             reward_weight_trials=reward_weight_trials,
             ray_address=ray_address,
         )
-
-def main():
-    NUM_GENERATIONS = 1  # Number of cover letters to generate for each job
-    import os, json
-    scraped_jobs = [
-        file for file in os.listdir("scraped_jobs") 
-        if os.path.isfile(os.path.join("scraped_jobs", file))
-        and file.endswith(".json")
-    ]
-    generated: int = 0
-    for job_file in scraped_jobs:
-        job_path = os.path.join("scraped_jobs", job_file)
-        with open(job_path, "r") as f:
-            job_data = json.load(f)
-        
-        job_description = job_data.get("job_description", "")
-        resume = job_data.get("resume", "")
-        user_profile = job_data.get("user_profile", "")
-        company_profile = job_data.get("company_profile", "")
-
-        cover_letter_model = CoverLetterModel()
-        cover_letter = cover_letter_model.generate_cover_letter(
-            job_description, resume, user_profile, company_profile
-        )
-        
-        print(f"Generated Cover Letter for {job_file}:\n{cover_letter}\n")
-        generated += 1
-        if generated >= NUM_GENERATIONS:
-            break
