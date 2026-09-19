@@ -1,0 +1,163 @@
+Kelvin Mock | AI Software Developer
+
+Ottawa, ON (willing to relocate) ǀ +1 (437) 328–1046 | kelvin.mock@gmail.com | LinkedIn: King Lun Kelvin Mock | GitHub: kmock930*, mockk, KelvinMock, ML Profile: https://shorturl.at/38Rly | Hackathons | Valid Driver’s G License	
+
+SUMMARY
+
+3+ years software development and automation experience with a set of self-motivated AI/ML projects. 
+
+Strong software engineering skills in Python, Java and SQL. Experienced in building AI capabilities with LLM.
+
+Hands-on experience: deep learning, transformers, LLM, NLP. Agentic tools: LangChain, HuggingFace, OpenAI API.
+
+Strong debugging, performance optimization, and problem-solving skills. Willing to learn new technologies.
+
+SKILLS
+
+Programming Languages: SQL, Python, Java (J2EE, Spring Boot), JavaScript, TypeScript, C#, C++, C, Prolog, Dart.
+
+Python: Numpy, Pandas, Scikit-learn, Tensorflow, Keras, PyTorch, OpenCV, LangChain, LlamaIndex, FastAPI, pip.
+
+Web & Mobile: HTML, CSS, JavaScript (Angular, Vue, React, Next, Node, Express, Nest), TypeScript, Flutter.
+
+Cloud: Google Cloud Platform (GCP), Amazon Web Services (AWS), Kubernetes, Docker.
+
+LLM Providers: Anthropic Claude, OpenAI, Google Gemini, open-source models (Llama, Mistral).
+
+Databases: Oracle Database, MySQL, MS SQL Server, PostgreSQL (pgvector), SQLite, AWS RDS, Pinecone, Prisma.
+
+Version Control & Build Processes: Git – GitHub, GitLab, BitBucket; Subversion (SVN); Maven, Gradle; Linux OS.
+
+Communicative Languages: English (Fluent – verbal, written); Cantonese (Native); Mandarin (Fluent).
+
+EDUCATION
+
+MEng Computer Science – Concentration Applied Artificial Intelligence | University of Ottawa & Carleton University
+
+September 2024 – Present (est. Aug 2026)
+
+Natural Language Processing: proven ability to fine-tune LLMs / transformers, implement semantic search.
+
+Machine Learning: Demonstrated expertise in supervised learning using Python, scikit-learn, pandas, numpy.
+
+Computer Vision: pixel-based image loading and processing (OpenCV, scikit-image), training neural networks with Tensorflow Keras, Object Detection with Multi-Task Regression bounding box, transfer learning, data ablation.
+
+Agentic: Game Theory, applications – voting and elections, agent design, multi-agent, reinforcement learning. 
+
+AI in Software: Automated Software Testing with Search-Based Metaheuristics (e.g., Genetic Algorithm).
+
+Uncertainty Evaluation: Bayesian statistics, propagation, model calibration, synthetic data generation.
+
+Data Science and Machine Learning Micro-Degree Course| Massachusetts Institute of Technology (Online)
+
+February 2023 – May 2023
+
+Built familiarity with MLOps practices from an industrial data scientist at Nissan, earning over 90% course grade.
+
+BSc (Hons) Computer Science (Artificial Intelligence) | Royal Holloway, University of London (United Kingdom) 
+
+September 2019 – July 2021
+
+Achieved Grade A in FYP on developing a Chinese Chess AI engine in Java with best practices of OOP.  
+
+EMPLOYMENT HISTORY
+
+Full Stack and AI Developer (Freelancing)	| Micro Capital Limited (SnapEats Project) – Remote 
+
+Feb 2025 – Present
+
+Been facilitating research, prototyping solutions, building a data scraping pipeline to fetch data from internal MySQL databases and to orchestrate LLM for an Agentic Recommendation System and chatbot for a food app. 
+
+Built AI-enabled chatbot capabilities on top of modern large language models (LLMs) with LLM API tool calling.
+
+Developed authentication features for a restaurant merchant facing backend system using Nest JS and Prisma.
+
+Data Analyst (Co-op)		   | National Resource Council (NRC) Canada – Ottawa, Ontario, Canada
+
+Supervised by Andres Gallardo and Iain Macdonald in the IBP team
+
+May 2025 – Dec 2025
+
+Built synthetic data generation pipeline to extract and analyze 300k+ construction data from BIM and GIS system using Python Pandas, Excel, JSON, Selenium, and LLM API tool calling for labeling missing or incomplete data.
+
+Aggregated geographical data from GIS with GeoPandas and Parquet, and validated dataset from other sources.
+
+Trained a VAE model for building simulation, reduced 33% loss, and integrated as an AI-powered data pipeline.
+
+Software Development Analyst | Qualicom Innovations Inc. – Toronto, Ontario, Canada				                Nov 2021 – May 2024
+
+Developed, maintained, and migrated full stack GCP cloud-based software (SaaS) product, backend APIs, database solutions to Canadian telecoms, including POS systems for over 1000 users. Utilized Java J2EE with Maven. 
+
+Developed, debugged, and tested the internal HRIS web, which streamlines daily processes for around 200 employees, with Next JS, Mirage JS, JSON, MUI, Serverless Lambda on AWS cloud, with 9 people in 10 months. 
+
+Delivered bi-weekly product demonstrations to clients using PowerPoint to translate analytics to business visuals.
+
+Provided SQL scripts to internal and external clients, for data patching / database structuring, deployed to flyway.
+
+Automated end-to-end testing by using JavaScript (Cypress library), or Java (Selenium) with ChromeDriver. 
+
+Software Developer (Outsourced)| TELUS – Toronto, Ontario Canada	                                                          	
+
+April 2022 – April 2023
+
+Developed a backend Experience REST API and its Microservice Architecture running in a Kubernetes cluster on GCP cloud platform from scratch, by using Java Spring Boot. Collaborated with an Agile Scrum team of 5.
+
+Created a CI/CD pipeline using GitHub Action for cloud deployments, achieving 80%+ unit tests coverage.
+
+Collaborated with functional teams to define business requirements, quality acceptance criteria, and priorities. 
+
+Junior Software Engineer (Part Time) | Datatag ID Ltd. – Egham, Surrey, United Kingdom		                   
+
+July 2021 – September 2021
+
+Worked with OCR technology in Python using libraries e.g. OpenCV, Jupyter Notebook, with POC in R&D analysis.
+
+Paid Researcher| Royal Holloway, University of London – London, United Kingdom                                                                                                         
+
+July 2021 – August 2021
+
+Designed a new module for new students by performing data analysis with JavaScript (D3 library), Excel, PPT.
+
+Programmer Trainee| Continuous Technology International Ltd. (CTIL) – Hong Kong
+
+June 2020 – August 2020
+
+Investigated REST API communication methods, with C# and ASP.NET. Automated reporting with Crystal Report.
+
+Resolved CRM issues for Canon website with JavaScript (Vue JS) and React Native. Shipped SQL patches to clients.
+
+PROJECTS
+
+May 2026 – Present: Been developing deep learning models for clinical EVGS scoring, with PyTorch and CUDA.
+
+Technologies: Python3, Jupyter Notebook, CUDA GPU optimization, LORA quantization, HuggingFace, VLMs.
+
+Dec 2025 – Present: Developed a RAG pipeline to store embeddings to vector database for counseling chatbot.
+
+Jan 2025 – Present: Developed a webapp and a GenAI model for resume scanning that aligns with ATS programs. 
+
+Technologies: JavaScript, TypeScript, Python, React, MUI, Natural Language Processing (NLTK), PostgreSQL, Tailwind CSS, GenAI (Google Gemini, gadget.dev), FastAPI, Word2Vec, prompt engineering.
+
+Feb 2025 – May 2025: Conducted a production-grade multi-modal analysis on suicide detection with LLMs. 
+
+Technologies: Python3, HuggingFace, PyTorch and Tensorflow, JSON embeddings, FastAPI, Amazon Lambda. 
+
+Mar 2025: Trained an image-based facial emotion recognition model and integrated into a webapp. 
+
+Technologies: Python3, Jupyter Notebook, Kaggle, CNN, OpenCV, TensorFlow, MongoDB, Flask, Gemini.
+
+Sept – Dec 2024: Harmful Video Classification: Built a classifier on 2 video datasets with transfer learning. 
+
+Technologies: Python3, Jupyter Notebook, Neural Networks (MSupCL, SSCL), Tensorflow, Keras, Conda, Cuda.
+
+Sept – Dec 2024: Drug Consumption Analysis: Built, analyzed, and documented a pipeline of 6 classifiers. 
+
+Technologies: Python3, Jupyter Notebook, ROC-AUC, (XAI) SHAP values, supervised vs semi-supervised. 
+
+Oct 2024 – Multi-Category Image Modelling: Built a multi-class Computer Vision model and performed transfer learning to learn the coordinates of a bounding box with regression and segmentation. 
+
+Technologies: Python3, Jupyter Notebook, Neural Networks (ResNet50-V2), Tensorflow, Keras, Conda, Cuda. 
+
+July – August 2024 – Hackathon: Developed a full-stack dashboard to ease data management for an NGO – CICS.
+
+Technologies: HTML, CSS, TypeScript (Next), Supabase Cloud, Postman, Figma design, Git, CI/CD, PostgresSQL

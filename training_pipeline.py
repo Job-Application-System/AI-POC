@@ -1,0 +1,982 @@
+"""Build and launch a Hy3 cover-letter RL training pipeline.
+
+The Hy3 RL recipe expects verl parquet rows with five fields:
+data_source, prompt, ability, reward_model, and extra_info. This module turns
+scraped job/company/profile data plus one fixed resume into that format, with
+optional candidate cover-letter generation for weak supervision and rewards.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import re
+import shlex
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable
+
+from TextReader import TextReader
+
+try:
+    import pandas as pd
+except ImportError:  # pragma: no cover - handled at runtime with a clear error.
+    pd = None
+
+
+CURR_DIR = Path(__file__).resolve().parent
+ROOT_DIR = CURR_DIR.parent
+DEFAULT_JOBS_DIR = CURR_DIR / "scraped_jobs"
+DEFAULT_PROFILE_PATH = CURR_DIR / "scraped_profiles"
+DEFAULT_RESUME_PATH = CURR_DIR / "sample_resumes"
+DEFAULT_OUTPUT_DIR = CURR_DIR / "training_data" / "cover_letter_hy3"
+DEFAULT_VERL_DIR = CURR_DIR / "verl"
+DEFAULT_REWARD_PATH = CURR_DIR / "cover_letter_reward.py"
+TEXT_READER_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt", ".json"}
+LLAMAPARSE_EXTENSIONS = {".pdf", ".doc", ".docx"}
+
+NUM_GENERATIONS = 100
+DATA_SOURCE = "job_application"
+COVER_LETTER_ABILITY = "cover_letter"
+RESUME_ABILITY = "resume"
+CV_FOLDS = 5
+REWARD_WEIGHT_TRIALS = 25
+FINAL_SCORE_WEIGHT = 1.0
+COMPONENT_KEYS = (
+    "similarity_from_occurrences",
+    "similarity_from_num_of_words",
+    "similarity_ratio",
+    "similarity_by_character",
+    "similarity_by_commonality",
+    "similarity_by_cosine",
+)
+DEFAULT_REWARD_WEIGHTS = {
+    "similarity_from_occurrences": 1.0,
+    "similarity_from_num_of_words": 1.0,
+    "similarity_ratio": 1.0,
+    "similarity_by_character": 0.25,
+    "similarity_by_commonality": 1.0,
+    "similarity_by_cosine": 1.0,
+}
+DEFAULT_REWARD_BLEND_WEIGHTS = {
+    "weighted_similarity": 0.75,
+    "length_reward": 0.10,
+    "format_reward": 0.10,
+    "candidate_match": 0.05,
+}
+
+
+@dataclass(frozen=True)
+class JobExample:
+    job_description: str
+    resume: str
+    user_profile: str
+    company_profile: str
+    title: str = ""
+    company: str = ""
+    location: str = ""
+    source_file: str = ""
+    source_index: int = 0
+
+
+def load_dotenv_keys() -> None:
+    """Load simple KEY=VALUE pairs from .env without requiring python-dotenv."""
+    env_path = ROOT_DIR / ".env"
+    if not env_path.exists():
+        return
+
+    for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def llamaparse_text(path: Path) -> str:
+    """Extract text with LlamaParse when an API key is configured."""
+    load_dotenv_keys()
+    api_key = os.environ.get("LLAMA_CLOUD_API_KEY") or os.environ.get("LLAMA_PARSE_API_KEY")
+    if not api_key:
+        return ""
+
+    try:
+        from llama_parse import LlamaParse
+    except ImportError:
+        return ""
+
+    parser = LlamaParse(api_key=api_key, result_type="markdown")
+    documents = parser.load_data(str(path))
+    return "\n\n".join(getattr(document, "text", "") for document in documents).strip()
+
+
+def read_text(path: Path, prefer_llamaparse: bool = False) -> str:
+    """Read text from txt/json/pdf/docx-ish sources."""
+    if not path.exists():
+        return ""
+    if path.suffix.lower() == ".json":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return json.dumps(data, indent=2, ensure_ascii=False)
+
+    if prefer_llamaparse and path.suffix.lower() in LLAMAPARSE_EXTENSIONS:
+        parsed = llamaparse_text(path)
+        if parsed:
+            return parsed
+
+    parsed = TextReader.parseText(str(path))
+    if parsed:
+        return parsed
+
+    if path.suffix.lower() in LLAMAPARSE_EXTENSIONS:
+        parsed = llamaparse_text(path)
+        if parsed:
+            return parsed
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def latest_supported_file(path: Path, label: str) -> Path:
+    """Resolve a file or choose the latest supported text file in a directory."""
+    if path.is_file():
+        if path.suffix.lower() in TEXT_READER_EXTENSIONS:
+            return path
+        raise ValueError(f"{label} file has unsupported extension: {path}")
+
+    if not path.exists():
+        raise FileNotFoundError(f"{label} path does not exist: {path}")
+    if not path.is_dir():
+        raise ValueError(f"{label} path must be a file or directory: {path}")
+
+    candidates = [
+        candidate
+        for candidate in path.iterdir()
+        if candidate.is_file() and candidate.suffix.lower() in TEXT_READER_EXTENSIONS
+    ]
+    if not candidates:
+        supported = ", ".join(sorted(TEXT_READER_EXTENSIONS))
+        raise FileNotFoundError(f"No supported {label} file found in {path}. Supported: {supported}")
+    return max(candidates, key=lambda candidate: candidate.stat().st_mtime)
+
+
+def supported_files(path: Path) -> list[Path]:
+    if not path.exists() or not path.is_dir():
+        return []
+    return [
+        candidate
+        for candidate in path.iterdir()
+        if candidate.is_file() and candidate.suffix.lower() in TEXT_READER_EXTENSIONS
+    ]
+
+
+def extract_section(text: str, headings: tuple[str, ...]) -> str:
+    pattern = "|".join(re.escape(heading) for heading in headings)
+    match = re.search(rf"(?ims)^\s*(?:{pattern})\s*$([\s\S]*?)(?=^\s*[A-Z][A-Z /&-]{{2,}}\s*$|\Z)", text)
+    if not match:
+        return ""
+    return "\n".join(line.strip() for line in match.group(1).splitlines() if line.strip())
+
+
+def resume_profile_summary(resume_text: str) -> str:
+    """Build compact applicant profile context directly from resume text."""
+    lines = [line.strip() for line in resume_text.splitlines() if line.strip()]
+    contact = "\n".join(lines[:6])
+    sections = {
+        "summary": extract_section(resume_text, ("summary", "profile", "objective")),
+        "skills": extract_section(resume_text, ("skills", "technical skills", "technologies")),
+        "experience": extract_section(resume_text, ("experience", "work experience", "professional experience")),
+        "education": extract_section(resume_text, ("education",)),
+        "projects": extract_section(resume_text, ("projects", "selected projects")),
+    }
+    body = ["Derived user profile from attached resume.", "", "Contact/header:", contact]
+    for label, value in sections.items():
+        if value:
+            body.extend(["", f"{label.title()}:", value[:4000]])
+    if len(body) <= 3:
+        body.extend(["", "Resume text:", resume_text[:8000]])
+    return "\n".join(body).strip()
+
+
+def load_user_profile(path: Path, resume_text: str) -> str:
+    if path.is_file():
+        return read_text(latest_supported_file(path, "user profile"))
+
+    if supported_files(path):
+        return read_text(latest_supported_file(path, "user profile"))
+
+    return resume_profile_summary(resume_text)
+
+
+def normalize_job_rows(raw: Any, source_file: Path) -> list[dict[str, Any]]:
+    if isinstance(raw, list):
+        return [row for row in raw if isinstance(row, dict)]
+    if isinstance(raw, dict):
+        for key in ("jobs", "data", "results"):
+            value = raw.get(key)
+            if isinstance(value, list):
+                return [row for row in value if isinstance(row, dict)]
+        return [raw]
+    return []
+
+
+def extract_job_description(row: dict[str, Any]) -> str:
+    fields = (
+        "job_description",
+        "job_description_formatted",
+        "job_summary",
+        "description",
+        "summary",
+    )
+    for field in fields:
+        value = row.get(field)
+        if value:
+            return str(value)
+    return ""
+
+
+def extract_company_profile(row: dict[str, Any], company_profiles: dict[str, str]) -> str:
+    company = str(row.get("company") or row.get("company_name") or "").strip()
+    if company and company.lower() in company_profiles:
+        return company_profiles[company.lower()]
+
+    snippets = []
+    for field in ("company", "company_name", "company_description", "company_url", "industry"):
+        value = row.get(field)
+        if value:
+            snippets.append(f"{field}: {value}")
+    return "\n".join(snippets)
+
+
+def load_company_profiles(paths: Iterable[Path]) -> dict[str, str]:
+    profiles: dict[str, str] = {}
+    for path in paths:
+        if not path.exists() or path.suffix.lower() != ".json":
+            continue
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        rows = normalize_job_rows(raw, path)
+        for row in rows:
+            company = str(row.get("company") or row.get("name") or row.get("company_name") or "").strip()
+            if company:
+                profiles[company.lower()] = json.dumps(row, ensure_ascii=False)
+    return profiles
+
+
+def load_jobs(
+    jobs_dir: Path,
+    resume_path: Path,
+    user_profile_path: Path,
+    company_profile_paths: Iterable[Path],
+    limit: int | None,
+) -> list[JobExample]:
+    resume_file = latest_supported_file(resume_path, "resume")
+    resume = read_text(resume_file, prefer_llamaparse=True)
+    user_profile = load_user_profile(user_profile_path, resume)
+    company_profiles = load_company_profiles(company_profile_paths)
+
+    examples: list[JobExample] = []
+    for path in sorted(jobs_dir.glob("*.json")):
+        rows = normalize_job_rows(json.loads(path.read_text(encoding="utf-8")), path)
+        for index, row in enumerate(rows):
+            job_description = extract_job_description(row).strip()
+            if not job_description:
+                continue
+            examples.append(
+                JobExample(
+                    job_description=job_description,
+                    resume=resume,
+                    user_profile=user_profile,
+                    company_profile=extract_company_profile(row, company_profiles),
+                    title=str(row.get("title") or row.get("job_title") or ""),
+                    company=str(row.get("company") or row.get("company_name") or ""),
+                    location=str(row.get("location") or ""),
+                    source_file=str(path),
+                    source_index=index,
+                )
+            )
+            if limit is not None and len(examples) >= limit:
+                return examples
+    return examples
+
+
+def cover_letter_prompt(example: JobExample) -> list[dict[str, str]]:
+    system = (
+        "You are a professional cover letter writer. Use only facts supported by "
+        "the provided resume, user profile, job description, and company profile. "
+        "Write a concise, specific, ATS-aware cover letter."
+    )
+    user = f"""
+        Fixed resume:
+        {example.resume}
+
+        User profile:
+        {example.user_profile}
+
+        Company profile:
+        {example.company_profile}
+
+        Job title: {example.title}
+        Company: {example.company}
+        Location: {example.location}
+
+        Job description:
+        {example.job_description}
+
+        Return only the finished cover letter.
+    """
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def resume_prompt(example: JobExample) -> list[dict[str, str]]:
+    system = (
+        "You are a professional resume writer. Tailor the applicant's resume to "
+        "the job while preserving factual accuracy. Use the user profile and "
+        "company profile only as context; do not invent unsupported facts."
+    )
+    user = f"""
+        Original resume:
+        {example.resume}
+
+        User profile:
+        {example.user_profile}
+
+        Company profile:
+        {example.company_profile}
+
+        Job title: {example.title}
+        Company: {example.company}
+        Location: {example.location}
+
+        Job description:
+        {example.job_description}
+
+        Return only the tailored resume.
+    """
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def similarity_component_scores(example: JobExample, resume: str, cover_letter: str) -> dict[str, float]:
+    from SimilarityModel import SimilarityModel
+    from TextProcessor import TextProcessor
+
+    model = SimilarityModel(example.job_description, resume, cover_letter)
+    scores = model.componentScores()
+    scores["final_score"] = float(model.evaluateFinalScore())
+    occurences_source = TextProcessor.getOccurences(model.tokenizedSource, model.tokenizedSource)
+    occurences_target = TextProcessor.getOccurences(model.tokenizedCorpus, model.tokenizedCorpus)
+    scores["simiilarityFromOccurences"] = scores["similarity_from_occurrences"]
+    scores["simiilarityFromNumOfWords"] = float(
+        model.simiilarityFromNumOfWords(occurences_source, occurences_target, model.tokenizedCorpus)
+    )
+    scores["similarityRatio"] = scores["similarity_ratio"]
+    scores["similarityByCharacter"] = scores["similarity_by_character"]
+    scores["similarityByCommonality"] = scores["similarity_by_commonality"]
+    scores["similarityByCosineSimilarity"] = scores["similarity_by_cosine"]
+    scores["evaluateFinalScore"] = scores["final_score"]
+    return {key: max(0.0, min(1.0, float(value))) for key, value in scores.items()}
+
+
+def weighted_similarity(scores: dict[str, float], weights: dict[str, float]) -> float:
+    weighted_total = FINAL_SCORE_WEIGHT * scores.get("final_score", 0.0)
+    total_weight = FINAL_SCORE_WEIGHT
+    for key in COMPONENT_KEYS:
+        weight = float(weights.get(key, DEFAULT_REWARD_WEIGHTS[key]))
+        weighted_total += weight * scores.get(key, 0.0)
+        total_weight += weight
+    return weighted_total / total_weight if total_weight > 0 else 0.0
+
+
+def score_application(
+    example: JobExample,
+    resume: str,
+    cover_letter: str,
+    weights: dict[str, float] | None = None,
+) -> float:
+    """Local reward proxy used for generated labels and CV weight tuning."""
+    try:
+        score = weighted_similarity(
+            similarity_component_scores(example, resume, cover_letter),
+            weights or DEFAULT_REWARD_WEIGHTS,
+        )
+    except Exception:
+        score = 0.0
+
+    letter_words = cover_letter.split()
+    length_score = 1.0 if 250 <= len(letter_words) <= 450 else 0.5
+    unsupported_penalty = 0.0 if "As an AI" not in f"{resume}\n{cover_letter}" else 0.25
+    return max(0.0, min(1.0, (0.8 * score) + (0.2 * length_score) - unsupported_penalty))
+
+
+def generate_cover_letter_candidates(examples: list[JobExample], num_generations: int) -> dict[int, list[dict[str, Any]]]:
+    from CoverLetterModel import CoverLetterModel
+
+    model = CoverLetterModel()
+    candidates: dict[int, list[dict[str, Any]]] = {}
+    for index, example in enumerate(examples):
+        candidates[index] = []
+        for generation in range(num_generations):
+            cover_letter = model.generate_cover_letter(
+                example.job_description,
+                example.resume,
+                example.user_profile,
+                example.company_profile,
+            )
+            candidates[index].append(
+                {
+                    "generation": generation,
+                    "cover_letter": cover_letter,
+                    "component_scores": similarity_component_scores(example, example.resume, cover_letter),
+                    "score": score_application(example, example.resume, cover_letter),
+                }
+            )
+    return candidates
+
+
+def generate_resume_candidates(examples: list[JobExample], num_generations: int) -> dict[int, list[dict[str, Any]]]:
+    from ResumeModel import ResumeModel
+
+    model = ResumeModel()
+    candidates: dict[int, list[dict[str, Any]]] = {}
+    for index, example in enumerate(examples):
+        candidates[index] = []
+        for generation in range(num_generations):
+            tailored_resume = model.generate_resume(
+                example.job_description,
+                example.resume,
+                example.user_profile,
+                example.company_profile,
+            )
+            candidates[index].append(
+                {
+                    "generation": generation,
+                    "tailored_resume": tailored_resume,
+                    "component_scores": similarity_component_scores(example, tailored_resume, ""),
+                    "score": score_application(example, tailored_resume, ""),
+                }
+            )
+    return candidates
+
+
+class RandomSuggestionTrial:
+    """Small Optuna-like fallback for numeric reward-weight suggestions."""
+
+    def __init__(self, rng: random.Random):
+        self.rng = rng
+
+    def suggest_float(self, name: str, low: float, high: float, step: float | None = None) -> float:
+        if step is None:
+            return self.rng.uniform(low, high)
+        steps = int(round((high - low) / step))
+        return low + (self.rng.randint(0, steps) * step)
+
+
+def suggest_reward_weights(trial: Any) -> dict[str, float]:
+    return {
+        "similarity_from_occurrences": trial.suggest_float("similarity_from_occurrences", 0.0, 2.0, step=0.05),
+        "similarity_from_num_of_words": trial.suggest_float("similarity_from_num_of_words", 0.0, 2.0, step=0.05),
+        "similarity_ratio": trial.suggest_float("similarity_ratio", 0.0, 2.0, step=0.05),
+        "similarity_by_character": trial.suggest_float("similarity_by_character", 0.0, 1.0, step=0.05),
+        "similarity_by_commonality": trial.suggest_float("similarity_by_commonality", 0.0, 2.0, step=0.05),
+        "similarity_by_cosine": trial.suggest_float("similarity_by_cosine", 0.0, 2.0, step=0.05),
+    }
+
+
+def reward_weight_trials(num_trials: int, seed: int) -> list[dict[str, float]]:
+    try:
+        import optuna
+    except ImportError:
+        rng = random.Random(seed)
+        return [suggest_reward_weights(RandomSuggestionTrial(rng)) for _ in range(num_trials)]
+
+    sampler = optuna.samplers.RandomSampler(seed=seed)
+    study = optuna.create_study(direction="maximize", sampler=sampler)
+    trials = []
+    for _ in range(num_trials):
+        trial = study.ask()
+        trials.append(suggest_reward_weights(trial))
+        study.tell(trial, 0.0)
+    return trials
+
+
+def tune_reward_weights(
+    candidates_by_task: dict[str, dict[int, list[dict[str, Any]]]],
+    folds: int,
+    seed: int,
+    output_dir: Path,
+    num_trials: int,
+) -> dict[str, float]:
+    application_indexes = sorted(
+        {
+            index
+            for candidates in candidates_by_task.values()
+            for index, items in candidates.items()
+            if items
+        }
+    )
+    if len(application_indexes) < 2:
+        return DEFAULT_REWARD_WEIGHTS
+
+    shuffled = application_indexes[:]
+    random.Random(seed).shuffle(shuffled)
+    fold_count = min(folds, len(shuffled))
+    fold_indexes = [shuffled[i::fold_count] for i in range(fold_count)]
+    trials = [DEFAULT_REWARD_WEIGHTS, *reward_weight_trials(num_trials, seed)]
+    fold_results = []
+
+    def mean_best_score(indexes: list[int], weights: dict[str, float]) -> float:
+        if not indexes:
+            return 0.0
+        application_scores = []
+        for index in indexes:
+            task_scores = []
+            for task_candidates in candidates_by_task.values():
+                weighted_scores = [
+                    weighted_similarity(candidate["component_scores"], weights)
+                    for candidate in task_candidates.get(index, [])
+                ]
+                if weighted_scores:
+                    task_scores.append(max(weighted_scores))
+            if task_scores:
+                application_scores.append(sum(task_scores) / len(task_scores))
+        return sum(application_scores) / len(application_scores) if application_scores else 0.0
+
+    selected_weights = []
+    for fold_id, val_indexes in enumerate(fold_indexes):
+        train_indexes = [index for index in shuffled if index not in set(val_indexes)]
+        best_weights = max(trials, key=lambda weights: mean_best_score(train_indexes, weights))
+        fold_results.append(
+            {
+                "fold": fold_id,
+                "train_indexes": train_indexes,
+                "val_indexes": val_indexes,
+                "train_score": mean_best_score(train_indexes, best_weights),
+                "val_score": mean_best_score(val_indexes, best_weights),
+                "weights": best_weights,
+            }
+        )
+        selected_weights.append(best_weights)
+
+    averaged = {
+        key: sum(weights[key] for weights in selected_weights) / len(selected_weights)
+        for key in COMPONENT_KEYS
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "cv_reward_weights.json").write_text(
+        json.dumps({"selected_weights": averaged, "folds": fold_results}, indent=2),
+        encoding="utf-8",
+    )
+    return averaged
+
+
+def best_candidate(
+    candidates: list[dict[str, Any]] | None,
+    weights: dict[str, float],
+) -> dict[str, Any] | None:
+    return max(
+        candidates or [],
+        key=lambda item: weighted_similarity(item.get("component_scores", {}), weights),
+        default=None,
+    )
+
+
+def to_cover_letter_row(
+    example: JobExample,
+    index: int,
+    cover_letter_candidates: list[dict[str, Any]] | None = None,
+    resume_candidates: list[dict[str, Any]] | None = None,
+    reward_weights: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    weights = reward_weights or DEFAULT_REWARD_WEIGHTS
+    best_cover_letter = best_candidate(cover_letter_candidates, weights)
+    best_resume = best_candidate(resume_candidates, weights)
+    ground_truth = {
+        "task_type": COVER_LETTER_ABILITY,
+        "resume": example.resume,
+        "best_tailored_resume": best_resume["tailored_resume"] if best_resume else "",
+        "user_profile": example.user_profile,
+        "company_profile": example.company_profile,
+        "job_description": example.job_description,
+        "best_cover_letter": best_cover_letter["cover_letter"] if best_cover_letter else "",
+        "best_score": weighted_similarity(best_cover_letter["component_scores"], weights) if best_cover_letter else None,
+        "reward_weights": weights,
+        "reward_blend_weights": DEFAULT_REWARD_BLEND_WEIGHTS,
+        "final_score_weight": FINAL_SCORE_WEIGHT,
+        "rubric": {
+            "factuality": "Do not invent applicant experience or company facts.",
+            "relevance": "Address job requirements and company context.",
+            "format": "Return only a polished cover letter.",
+        },
+    }
+    return {
+        "data_source": DATA_SOURCE,
+        "prompt": cover_letter_prompt(example),
+        "ability": COVER_LETTER_ABILITY,
+        "reward_model": {"style": "rule", "ground_truth": json.dumps(ground_truth, ensure_ascii=False)},
+        "extra_info": {
+            "split": "train",
+            "index": index,
+            "application_id": f"{example.source_file}:{example.source_index}",
+            "title": example.title,
+            "company": example.company,
+            "location": example.location,
+            "source_file": example.source_file,
+            "source_index": example.source_index,
+            "task_type": COVER_LETTER_ABILITY,
+        },
+    }
+
+
+def to_resume_row(
+    example: JobExample,
+    index: int,
+    resume_candidates: list[dict[str, Any]] | None = None,
+    cover_letter_candidates: list[dict[str, Any]] | None = None,
+    reward_weights: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    weights = reward_weights or DEFAULT_REWARD_WEIGHTS
+    best_resume = best_candidate(resume_candidates, weights)
+    best_cover_letter = best_candidate(cover_letter_candidates, weights)
+    ground_truth = {
+        "task_type": RESUME_ABILITY,
+        "resume": example.resume,
+        "user_profile": example.user_profile,
+        "company_profile": example.company_profile,
+        "job_description": example.job_description,
+        "cover_letter": best_cover_letter["cover_letter"] if best_cover_letter else "",
+        "best_cover_letter": best_cover_letter["cover_letter"] if best_cover_letter else "",
+        "best_tailored_resume": best_resume["tailored_resume"] if best_resume else "",
+        "best_score": weighted_similarity(best_resume["component_scores"], weights) if best_resume else None,
+        "reward_weights": weights,
+        "reward_blend_weights": DEFAULT_REWARD_BLEND_WEIGHTS,
+        "final_score_weight": FINAL_SCORE_WEIGHT,
+        "rubric": {
+            "factuality": "Do not invent applicant experience or company facts.",
+            "relevance": "Address job requirements and optimize the resume for the job.",
+            "format": "Return only a tailored resume.",
+        },
+    }
+    return {
+        "data_source": DATA_SOURCE,
+        "prompt": resume_prompt(example),
+        "ability": RESUME_ABILITY,
+        "reward_model": {"style": "rule", "ground_truth": json.dumps(ground_truth, ensure_ascii=False)},
+        "extra_info": {
+            "split": "train",
+            "index": index,
+            "application_id": f"{example.source_file}:{example.source_index}",
+            "title": example.title,
+            "company": example.company,
+            "location": example.location,
+            "source_file": example.source_file,
+            "source_index": example.source_index,
+            "task_type": RESUME_ABILITY,
+        },
+    }
+
+
+def application_group_key(row: dict[str, Any]) -> str:
+    extra_info = row.get("extra_info") or {}
+    return str(
+        extra_info.get("application_id")
+        or f"{extra_info.get('source_file', '')}:{extra_info.get('source_index', extra_info.get('index', ''))}"
+    )
+
+
+def split_rows_by_application(
+    rows: list[dict[str, Any]],
+    val_ratio: float,
+    seed: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(application_group_key(row), []).append(row)
+
+    group_keys = list(grouped)
+    random.Random(seed).shuffle(group_keys)
+    val_count = max(1, int(len(group_keys) * val_ratio)) if len(group_keys) > 1 else 0
+    val_keys = set(group_keys[:val_count])
+    train_keys = set(group_keys[val_count:]) or set(group_keys)
+
+    train_rows = [row for key in group_keys if key in train_keys for row in grouped[key]]
+    val_rows = [row for key in group_keys if key in val_keys for row in grouped[key]]
+    return train_rows, val_rows or train_rows[:]
+
+
+def cross_validation_row_folds(rows: list[dict[str, Any]], folds: int, seed: int) -> list[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(application_group_key(row), []).append(row)
+
+    group_keys = list(grouped)
+    if len(group_keys) < 2:
+        return []
+
+    fold_count = min(folds, len(group_keys))
+    random.Random(seed).shuffle(group_keys)
+    fold_keys = [group_keys[i::fold_count] for i in range(fold_count)]
+    folds_out = []
+    for val_keys in fold_keys:
+        val_key_set = set(val_keys)
+        train_keys = [key for key in group_keys if key not in val_key_set]
+        train_rows = [row for key in train_keys for row in grouped[key]]
+        val_rows = [row for key in val_keys for row in grouped[key]]
+        folds_out.append((train_rows, val_rows))
+    return folds_out
+
+
+def write_cross_validation_folds(rows: list[dict[str, Any]], output_dir: Path, folds: int, seed: int) -> None:
+    if pd is None:
+        raise RuntimeError("Install pandas and pyarrow to write Hy3/verl parquet files.")
+    row_folds = cross_validation_row_folds(rows, folds, seed)
+    if not row_folds:
+        return
+
+    for fold_id, (train_rows, val_rows) in enumerate(row_folds):
+        fold_dir = output_dir / f"fold_{fold_id}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(train_rows).to_parquet(fold_dir / "train.parquet", index=False)
+        pd.DataFrame(val_rows).to_parquet(fold_dir / "val.parquet", index=False)
+
+
+def write_parquet(rows: list[dict[str, Any]], output_dir: Path, val_ratio: float, seed: int) -> tuple[Path, Path]:
+    if pd is None:
+        raise RuntimeError("Install pandas and pyarrow to write Hy3/verl parquet files.")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    train_rows, val_rows = split_rows_by_application(rows, val_ratio, seed)
+
+    train_path = output_dir / "train.parquet"
+    val_path = output_dir / "val.parquet"
+    pd.DataFrame(train_rows).to_parquet(train_path, index=False)
+    pd.DataFrame(val_rows or train_rows[:1]).to_parquet(val_path, index=False)
+    return train_path, val_path
+
+
+def build_launch_command(
+    train_path: Path,
+    val_path: Path,
+    verl_dir: Path,
+    reward_path: Path,
+    ray_address: str | None,
+) -> str:
+    env_parts = []
+    if ray_address:
+        env_parts.append(f"RAY_ADDRESS={shlex.quote(ray_address)}")
+    env_parts.extend(
+        [
+            f"TRAIN_FILES={shlex.quote(str(train_path.resolve()))}",
+            f"VAL_FILES={shlex.quote(str(val_path.resolve()))}",
+        ]
+    )
+    script = verl_dir / "examples" / "grpo_trainer" / "run_hy_v3_megatron.sh"
+    reward_args = [
+        f"reward.custom_reward_function.path={shlex.quote(str(reward_path.resolve()))}",
+        "reward.custom_reward_function.name=compute_score",
+    ]
+    job_parts = ["ray", "job", "submit", "--no-wait", "--runtime-env=runtime_env.yaml", "--"]
+    return " ".join(env_parts + job_parts + ["bash", shlex.quote(str(script)), *reward_args])
+
+
+def train_models_collectively(args: argparse.Namespace) -> tuple[Path, Path]:
+    """Prepare one shared RL dataset containing both resume and cover-letter tasks."""
+    examples = load_jobs(
+        jobs_dir=args.jobs_dir,
+        resume_path=args.resume,
+        user_profile_path=args.user_profile,
+        company_profile_paths=args.company_profiles,
+        limit=args.max_jobs,
+    )
+    if not examples:
+        raise RuntimeError(f"No job descriptions found in {args.jobs_dir}")
+
+    tasks = set(args.tasks)
+    cover_letter_candidates = (
+        generate_cover_letter_candidates(examples, args.num_generations)
+        if args.generate_candidates and COVER_LETTER_ABILITY in tasks
+        else {}
+    )
+    resume_candidates = (
+        generate_resume_candidates(examples, args.num_generations)
+        if args.generate_candidates and RESUME_ABILITY in tasks
+        else {}
+    )
+    reward_weights = (
+        tune_reward_weights(
+            {
+                COVER_LETTER_ABILITY: cover_letter_candidates,
+                RESUME_ABILITY: resume_candidates,
+            },
+            args.cv_folds,
+            args.seed,
+            args.output_dir,
+            args.reward_weight_trials,
+        )
+        if args.tune_reward_weights
+        else DEFAULT_REWARD_WEIGHTS
+    )
+
+    rows = []
+    for index, example in enumerate(examples):
+        if COVER_LETTER_ABILITY in tasks:
+            rows.append(
+                to_cover_letter_row(
+                    example,
+                    index,
+                    cover_letter_candidates.get(index),
+                    resume_candidates.get(index),
+                    reward_weights,
+                )
+            )
+        if RESUME_ABILITY in tasks:
+            rows.append(
+                to_resume_row(
+                    example,
+                    index,
+                    resume_candidates.get(index),
+                    cover_letter_candidates.get(index),
+                    reward_weights,
+                )
+            )
+
+    return write_training_outputs(rows, args)
+
+
+def write_training_outputs(rows: list[dict[str, Any]], args: argparse.Namespace) -> tuple[Path, Path]:
+    train_path, val_path = write_parquet(rows, args.output_dir, args.val_ratio, args.seed)
+    if args.write_cv_folds:
+        write_cross_validation_folds(rows, args.output_dir, args.cv_folds, args.seed)
+
+    command = build_launch_command(train_path, val_path, args.verl_dir, args.reward_path, args.ray_address)
+    (args.output_dir / "launch_hy3_grpo.sh").write_text(command + "\n", encoding="utf-8")
+
+    if args.submit:
+        subprocess.run(command, cwd=args.verl_dir, shell=True, check=True)
+
+    print(f"Wrote {len(rows)} verl rows")
+    print(f"Train: {train_path}")
+    print(f"Val:   {val_path}")
+    print(f"Launch command saved to: {args.output_dir / 'launch_hy3_grpo.sh'}")
+    return train_path, val_path
+
+
+def run_pipeline(args: argparse.Namespace) -> tuple[Path, Path]:
+    if not getattr(args, "_internal_model_call", False) and len(args.tasks) == 1:
+        task = args.tasks[0]
+        if task == COVER_LETTER_ABILITY:
+            from CoverLetterModel import CoverLetterModel
+
+            model = CoverLetterModel()
+        elif task == RESUME_ABILITY:
+            from ResumeModel import ResumeModel
+
+            model = ResumeModel()
+        else:
+            raise ValueError(f"Unsupported training task: {task}")
+
+        train_kwargs = {
+            "jobs_dir": args.jobs_dir,
+            "resume": args.resume,
+            "user_profile": args.user_profile,
+            "company_profiles": args.company_profiles,
+            "output_dir": args.output_dir,
+            "verl_dir": args.verl_dir,
+            "reward_path": args.reward_path,
+            "generate_candidates": args.generate_candidates,
+            "write_cv_folds": args.write_cv_folds,
+            "submit": args.submit,
+            "num_generations": args.num_generations,
+            "max_jobs": args.max_jobs,
+            "val_ratio": args.val_ratio,
+            "seed": args.seed,
+            "cv_folds": args.cv_folds,
+            "reward_weight_trials": args.reward_weight_trials,
+            "ray_address": args.ray_address,
+        }
+        if args.tune_reward_weights:
+            return model.tune(**train_kwargs)
+        return model.train(tune_reward_weights=False, **train_kwargs)
+
+    return train_models_collectively(args)
+
+
+def train_model_task(
+    task: str,
+    jobs_dir: Path = DEFAULT_JOBS_DIR,
+    resume: Path = DEFAULT_RESUME_PATH,
+    user_profile: Path = DEFAULT_PROFILE_PATH,
+    company_profiles: Iterable[Path] | None = None,
+    output_dir: Path = DEFAULT_OUTPUT_DIR,
+    verl_dir: Path = DEFAULT_VERL_DIR,
+    reward_path: Path = DEFAULT_REWARD_PATH,
+    num_generations: int = NUM_GENERATIONS,
+    max_jobs: int | None = None,
+    val_ratio: float = 0.1,
+    seed: int = 7,
+    cv_folds: int = CV_FOLDS,
+    reward_weight_trials: int = REWARD_WEIGHT_TRIALS,
+    ray_address: str | None = None,
+    generate_candidates: bool = False,
+    tune_reward_weights: bool = False,
+    write_cv_folds: bool = False,
+    submit: bool = False,
+) -> tuple[Path, Path]:
+    args = argparse.Namespace(
+        jobs_dir=jobs_dir,
+        resume=resume,
+        user_profile=user_profile,
+        company_profiles=list(company_profiles or []),
+        output_dir=output_dir,
+        verl_dir=verl_dir,
+        reward_path=reward_path,
+        num_generations=num_generations,
+        max_jobs=max_jobs,
+        val_ratio=val_ratio,
+        seed=seed,
+        cv_folds=cv_folds,
+        reward_weight_trials=reward_weight_trials,
+        tasks=[task],
+        ray_address=ray_address,
+        generate_candidates=generate_candidates,
+        tune_reward_weights=tune_reward_weights,
+        write_cv_folds=write_cv_folds,
+        submit=submit,
+        _internal_model_call=True,
+    )
+    return run_pipeline(args)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Prepare Hy3/verl cover-letter training data.")
+    parser.add_argument("--jobs-dir", type=Path, default=DEFAULT_JOBS_DIR)
+    parser.add_argument("--resume", type=Path, default=DEFAULT_RESUME_PATH)
+    parser.add_argument("--user-profile", type=Path, default=DEFAULT_PROFILE_PATH)
+    parser.add_argument("--company-profiles", type=Path, nargs="*", default=[])
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--verl-dir", type=Path, default=DEFAULT_VERL_DIR)
+    parser.add_argument("--reward-path", type=Path, default=DEFAULT_REWARD_PATH)
+    parser.add_argument("--num-generations", type=int, default=NUM_GENERATIONS)
+    parser.add_argument("--max-jobs", type=int, default=None)
+    parser.add_argument("--val-ratio", type=float, default=0.1)
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--cv-folds", type=int, default=CV_FOLDS)
+    parser.add_argument("--reward-weight-trials", type=int, default=REWARD_WEIGHT_TRIALS)
+    parser.add_argument(
+        "--tasks",
+        choices=(COVER_LETTER_ABILITY, RESUME_ABILITY),
+        nargs="+",
+        default=[COVER_LETTER_ABILITY, RESUME_ABILITY],
+    )
+    parser.add_argument("--ray-address", default=os.environ.get("RAY_ADDRESS"))
+    parser.add_argument("--generate-candidates", action="store_true")
+    parser.add_argument("--tune-reward-weights", action="store_true")
+    parser.add_argument("--write-cv-folds", action="store_true")
+    parser.add_argument("--submit", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> None:
+    run_pipeline(parse_args())
+
+
+if __name__ == "__main__":
+    main()

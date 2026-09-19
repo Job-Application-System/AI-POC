@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 import re
 import json
+import random
+import time
 from html import unescape
 from urllib.parse import parse_qs, urlparse
 CURR_DIR = Path(__file__).resolve().parent
@@ -28,9 +30,26 @@ LOCATIONS = [
     "Hong Kong"
 ]
 SAVED_JOBS_DIR = CURR_DIR / "scraped_jobs"
+JOB_DESCRIPTION_MIN_DELAY = 4
+JOB_DESCRIPTION_MAX_DELAY = 9
+JOB_DESCRIPTION_429_DELAY = 90
+JOB_DESCRIPTION_MAX_RETRIES = 3
 
 JOB_ID_PATTERN = re.compile(r"/jobs/view/(?:[^/?#]+-)?(\d+)(?:[/?#]|$)")
 JOB_POSTING_API_PATTERN = re.compile(r"/jobs-guest/jobs/api/jobPosting/(\d+)(?:[/?#]|$)")
+MARKDOWN_LINK_PATTERN = re.compile(r"(?:https?://)?\[([^\]]+)\]\((https?://[^)]+)\)")
+
+def normalize_url(url: str) -> str:
+    """
+    Turn accidental Markdown links into plain URLs before parsing or requesting.
+    """
+    url = url.strip()
+    match = MARKDOWN_LINK_PATTERN.search(url)
+    if match:
+        url = url.replace(match.group(0), match.group(2))
+    if url.startswith("http://www.linkedin.com"):
+        url = "https://" + url.removeprefix("http://")
+    return url
 
 def scrape_jobs(save_results: bool = True, max_jobs: int = 100) -> List[JobData]:
     """
@@ -82,10 +101,15 @@ def extract_job_descriptions(jobs: List[JobData | dict[str, Any]], save_results:
         if not url:
             continue
         print(f"Accessing job description URL: {url}")
-        description = fetch_job_description(url)
+        try:
+            description = fetch_job_description(url)
+        except Exception as exc:
+            print(f"Could not fetch job description for {url}: {exc}")
+            continue
         descriptions.append(description)
         descriptions_by_url[url] = description
         _set_job_description(job, description)
+        time.sleep(random.uniform(JOB_DESCRIPTION_MIN_DELAY, JOB_DESCRIPTION_MAX_DELAY))
 
     if save_results and descriptions_by_url:
         _save_job_descriptions(descriptions_by_url)
@@ -152,6 +176,7 @@ def _job_posting_api_url(url: str) -> str:
     """
     Convert a public LinkedIn job URL to the guest job-posting endpoint.
     """
+    url = normalize_url(url)
     job_id = _linkedin_job_id(url)
     if not job_id:
         raise ValueError(f"Could not find a LinkedIn job id in URL: {url}")
@@ -161,6 +186,7 @@ def _linkedin_job_id(url: str) -> str | None:
     """
     Extract a LinkedIn job id from common free and BrightData URL shapes.
     """
+    url = normalize_url(url)
     parsed_url = urlparse(url)
     for param in ("currentJobId", "jobId"):
         job_ids = parse_qs(parsed_url.query).get(param)
@@ -178,9 +204,24 @@ def fetch_job_description(url: str) -> str:
     """
     Fetch and parse the relevant job description text from a LinkedIn job URL.
     """
+    url = normalize_url(url)
     api_url = _job_posting_api_url(url)
-    response = requests.get(api_url, headers=ScraperConfig.HEADERS, timeout=20)
-    response.raise_for_status()
+    response = None
+    for attempt in range(1, JOB_DESCRIPTION_MAX_RETRIES + 1):
+        response = requests.get(api_url, headers=ScraperConfig.HEADERS, timeout=20)
+        if response.status_code != 429:
+            response.raise_for_status()
+            break
+
+        retry_after = response.headers.get("Retry-After")
+        delay = int(retry_after) if retry_after and retry_after.isdigit() else JOB_DESCRIPTION_429_DELAY * attempt
+        print(f"LinkedIn rate-limited job description fetch; sleeping {delay}s before retry {attempt}/{JOB_DESCRIPTION_MAX_RETRIES}.")
+        time.sleep(delay)
+    else:
+        raise RuntimeError(f"LinkedIn rate-limited job description fetch after {JOB_DESCRIPTION_MAX_RETRIES} attempts: {api_url}")
+
+    if response is None:
+        raise RuntimeError(f"No response while fetching job description: {api_url}")
 
     soup = BeautifulSoup(response.text, "html.parser")
     description = soup.find("div", class_="description__text")
