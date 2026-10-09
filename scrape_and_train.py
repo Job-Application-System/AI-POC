@@ -39,6 +39,39 @@ def timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def resolve_run_dir(args: argparse.Namespace) -> Path:
+    if args.resume_run_dir:
+        return args.resume_run_dir
+    if args.run_dir:
+        return args.run_dir
+    return args.model_dir / timestamp()
+
+
+def write_run_manifest(run_dir: Path, status: str, args: argparse.Namespace, **extra: Any) -> Path:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = run_dir / "manifest.json"
+    manifest = {}
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            manifest = {}
+    manifest.update(
+        {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "status": status,
+            "submitted_training": args.submit,
+            "tasks": args.tasks,
+            "training_output_dir": str(args.output_dir.resolve()),
+            "checkpoint_dir": str(args.checkpoint_dir.resolve()) if args.checkpoint_dir else "",
+            "resume_from_checkpoint": str(args.resume_from_checkpoint.resolve()) if args.resume_from_checkpoint else "",
+            **extra,
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest_path
+
+
 def selected_keywords(args: argparse.Namespace) -> list[str]:
     return args.keyword or list(scrape_job_descriptions.KEYWORDS)
 
@@ -131,10 +164,9 @@ def persist_training_manifest(
     val_path: Path,
     args: argparse.Namespace,
     profile_outputs: list[Path],
+    run_dir: Path,
 ) -> Path:
     args.model_dir.mkdir(parents=True, exist_ok=True)
-
-    run_dir = args.model_dir / timestamp()
     run_dir.mkdir(parents=True, exist_ok=True)
 
     launch_path = args.output_dir / "launch_hy3_grpo.sh"
@@ -143,17 +175,23 @@ def persist_training_manifest(
 
     copied_checkpoint_dir = ""
     if args.checkpoint_dir and args.checkpoint_dir.exists():
-        copied_checkpoint_dir = str((run_dir / "checkpoints").resolve())
-        shutil.copytree(args.checkpoint_dir, run_dir / "checkpoints", dirs_exist_ok=True)
+        checkpoint_copy_path = run_dir / "checkpoints"
+        copied_checkpoint_dir = str(checkpoint_copy_path.resolve())
+        if args.checkpoint_dir.resolve() != checkpoint_copy_path.resolve():
+            shutil.copytree(args.checkpoint_dir, checkpoint_copy_path, dirs_exist_ok=True)
 
     manifest = {
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "note": "Final RL model checkpoints belong under this run directory. Use --checkpoint-dir to copy a completed Hy3/verl checkpoint here.",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "status": "submitted" if args.submit else "prepared",
+        "note": "Final RL model checkpoints belong under checkpoint_dir. Re-run with --resume-run-dir to reuse this run directory.",
         "submitted_training": args.submit,
         "train_parquet": str(train_path.resolve()),
         "val_parquet": str(val_path.resolve()),
         "training_output_dir": str(args.output_dir.resolve()),
         "model_dir": str(run_dir.resolve()),
+        "checkpoint_dir": str(args.checkpoint_dir.resolve()) if args.checkpoint_dir else "",
+        "resume_from_checkpoint": str(args.resume_from_checkpoint.resolve()) if args.resume_from_checkpoint else "",
         "copied_checkpoint_dir": copied_checkpoint_dir,
         "profile_outputs": [str(path.resolve()) for path in profile_outputs],
         "tasks": args.tasks,
@@ -163,33 +201,63 @@ def persist_training_manifest(
 
 
 def run(args: argparse.Namespace) -> Path:
-    scrape_relevant_jobs(args)
-    profile_outputs = asyncio.run(scrape_profiles(args)) if args.profile_urls or args.company_profile_urls else []
+    run_dir = resolve_run_dir(args)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
-    pipeline_args = argparse.Namespace(
-        jobs_dir=args.jobs_dir,
-        resume=args.resume,
-        user_profile=args.user_profile,
-        company_profiles=[*args.company_profiles, *[path for path in profile_outputs if path.name.startswith("company_")]],
-        output_dir=args.output_dir,
-        verl_dir=args.verl_dir,
-        reward_path=args.reward_path,
-        num_generations=args.num_generations,
-        max_jobs=args.training_max_jobs,
-        val_ratio=args.val_ratio,
-        seed=args.seed,
-        cv_folds=args.cv_folds,
-        reward_weight_trials=args.reward_weight_trials,
-        tasks=args.tasks,
-        ray_address=args.ray_address,
-        generate_candidates=args.generate_candidates,
-        tune_reward_weights=args.tune_reward_weights,
-        write_cv_folds=args.write_cv_folds,
-        submit=args.submit,
-        _internal_model_call=False,
-    )
-    train_path, val_path = training_pipeline.run_pipeline(pipeline_args)
-    return persist_training_manifest(train_path, val_path, args, profile_outputs)
+    if args.resume_run_dir:
+        args.output_dir = args.resume_run_dir / "training_data"
+        if args.checkpoint_dir is None:
+            args.checkpoint_dir = args.resume_run_dir / "checkpoints"
+        if args.resume_from_checkpoint is None and args.checkpoint_dir.exists():
+            args.resume_from_checkpoint = args.checkpoint_dir
+    else:
+        args.output_dir = run_dir / "training_data"
+        if args.checkpoint_dir is None:
+            args.checkpoint_dir = run_dir / "checkpoints"
+
+    args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    write_run_manifest(run_dir, "started", args)
+
+    try:
+        scrape_relevant_jobs(args)
+        profile_outputs = asyncio.run(scrape_profiles(args)) if args.profile_urls or args.company_profile_urls else []
+
+        pipeline_args = argparse.Namespace(
+            jobs_dir=args.jobs_dir,
+            resume=args.resume,
+            user_profile=args.user_profile,
+            company_profiles=[*args.company_profiles, *[path for path in profile_outputs if path.name.startswith("company_")]],
+            output_dir=args.output_dir,
+            verl_dir=args.verl_dir,
+            reward_path=args.reward_path,
+            num_generations=args.num_generations,
+            max_jobs=args.training_max_jobs,
+            val_ratio=args.val_ratio,
+            seed=args.seed,
+            cv_folds=args.cv_folds,
+            reward_weight_trials=args.reward_weight_trials,
+            tasks=args.tasks,
+            ray_address=args.ray_address,
+            checkpoint_dir=args.checkpoint_dir,
+            resume_from_checkpoint=args.resume_from_checkpoint,
+            generate_candidates=args.generate_candidates,
+            tune_reward_weights=args.tune_reward_weights,
+            write_cv_folds=args.write_cv_folds,
+            submit=args.submit,
+            _internal_model_call=False,
+        )
+        train_path, val_path = training_pipeline.run_pipeline(pipeline_args)
+        return persist_training_manifest(train_path, val_path, args, profile_outputs, run_dir)
+    except KeyboardInterrupt:
+        training_state = args.output_dir / "training_state.json"
+        write_run_manifest(
+            run_dir,
+            "interrupted",
+            args,
+            note="Interrupted by KeyboardInterrupt. Re-run with --resume-run-dir to reuse training data and checkpoint paths.",
+            training_state=str(training_state.resolve()) if training_state.exists() else "",
+        )
+        raise
 
 
 def parse_args() -> argparse.Namespace:
@@ -205,7 +273,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--company-profiles", type=Path, nargs="*", default=[])
     parser.add_argument("--output-dir", type=Path, default=training_pipeline.DEFAULT_OUTPUT_DIR)
     parser.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR)
-    parser.add_argument("--checkpoint-dir", type=Path, default=None, help="Optional completed Hy3/verl checkpoint directory to copy into --model-dir.")
+    parser.add_argument("--run-dir", type=Path, default=None, help="Specific run directory for training data, manifest, and checkpoints.")
+    parser.add_argument("--resume-run-dir", type=Path, default=None, help="Reuse an existing run directory and resume from its checkpoint path when present.")
+    parser.add_argument("--checkpoint-dir", type=Path, default=None, help="Stable Hy3/verl checkpoint directory. Defaults to <run-dir>/checkpoints.")
+    parser.add_argument("--resume-from-checkpoint", type=Path, default=None, help="Existing Hy3/verl checkpoint directory to resume from.")
     parser.add_argument("--verl-dir", type=Path, default=training_pipeline.DEFAULT_VERL_DIR)
     parser.add_argument("--reward-path", type=Path, default=training_pipeline.DEFAULT_REWARD_PATH)
     parser.add_argument("--max-jobs", type=int, default=100, help="Jobs to scrape per search in the scraper.")
@@ -234,7 +305,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    model_run_dir = run(parse_args())
+    args = parse_args()
+    try:
+        model_run_dir = run(args)
+    except KeyboardInterrupt:
+        run_dir = resolve_run_dir(args)
+        print(f"Interrupted. Run manifest saved at: {run_dir / 'manifest.json'}")
+        print(f"Resume with: --resume-run-dir {run_dir}")
+        raise SystemExit(130)
     print(f"Training manifest/model handoff directory: {model_run_dir}")
 
 

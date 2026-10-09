@@ -16,6 +16,7 @@ import re
 import shlex
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -61,6 +62,13 @@ DEFAULT_REWARD_WEIGHTS = {
     "similarity_by_commonality": 1.0,
     "similarity_by_cosine": 1.0,
 }
+DEFAULT_GENERATION_PARAMS = {
+    "cover_letter_temperature": 0.9,
+    "cover_letter_top_p": 1.0,
+    "resume_temperature": 0.8,
+    "resume_top_p": 1.0,
+}
+DEFAULT_TUNING_PARAMS = {**DEFAULT_REWARD_WEIGHTS, **DEFAULT_GENERATION_PARAMS}
 DEFAULT_REWARD_BLEND_WEIGHTS = {
     "weighted_similarity": 0.75,
     "length_reward": 0.10,
@@ -386,6 +394,22 @@ def weighted_similarity(scores: dict[str, float], weights: dict[str, float]) -> 
     return weighted_total / total_weight if total_weight > 0 else 0.0
 
 
+def task_generation_params(params: dict[str, float], task: str) -> dict[str, float]:
+    prefix = "cover_letter" if task == COVER_LETTER_ABILITY else "resume"
+    return {
+        "temperature": float(params[f"{prefix}_temperature"]),
+        "top_p": float(params[f"{prefix}_top_p"]),
+    }
+
+
+def candidate_matches_generation_params(candidate: dict[str, Any], params: dict[str, float], task: str) -> bool:
+    candidate_params = candidate.get("generation_params")
+    if not candidate_params:
+        return True
+    expected = task_generation_params(params, task)
+    return all(abs(float(candidate_params[key]) - value) < 1e-9 for key, value in expected.items())
+
+
 def score_application(
     example: JobExample,
     resume: str,
@@ -407,7 +431,20 @@ def score_application(
     return max(0.0, min(1.0, (0.8 * score) + (0.2 * length_score) - unsupported_penalty))
 
 
-def generate_cover_letter_candidates(examples: list[JobExample], num_generations: int) -> dict[int, list[dict[str, Any]]]:
+def generation_params_for_trial(
+    trials: list[dict[str, float]],
+    generation: int,
+    task: str,
+) -> dict[str, float]:
+    params = trials[generation % len(trials)] if trials else DEFAULT_TUNING_PARAMS
+    return task_generation_params(params, task)
+
+
+def generate_cover_letter_candidates(
+    examples: list[JobExample],
+    num_generations: int,
+    tuning_trials: list[dict[str, float]] | None = None,
+) -> dict[int, list[dict[str, Any]]]:
     from CoverLetterModel import CoverLetterModel
 
     model = CoverLetterModel()
@@ -415,15 +452,19 @@ def generate_cover_letter_candidates(examples: list[JobExample], num_generations
     for index, example in enumerate(examples):
         candidates[index] = []
         for generation in range(num_generations):
+            generation_params = generation_params_for_trial(tuning_trials or [], generation, COVER_LETTER_ABILITY)
             cover_letter = model.generate_cover_letter(
                 example.job_description,
                 example.resume,
                 example.user_profile,
                 example.company_profile,
+                temperature=generation_params["temperature"],
+                top_p=generation_params["top_p"],
             )
             candidates[index].append(
                 {
                     "generation": generation,
+                    "generation_params": generation_params,
                     "cover_letter": cover_letter,
                     "component_scores": similarity_component_scores(example, example.resume, cover_letter),
                     "score": score_application(example, example.resume, cover_letter),
@@ -432,7 +473,11 @@ def generate_cover_letter_candidates(examples: list[JobExample], num_generations
     return candidates
 
 
-def generate_resume_candidates(examples: list[JobExample], num_generations: int) -> dict[int, list[dict[str, Any]]]:
+def generate_resume_candidates(
+    examples: list[JobExample],
+    num_generations: int,
+    tuning_trials: list[dict[str, float]] | None = None,
+) -> dict[int, list[dict[str, Any]]]:
     from ResumeModel import ResumeModel
 
     model = ResumeModel()
@@ -440,15 +485,19 @@ def generate_resume_candidates(examples: list[JobExample], num_generations: int)
     for index, example in enumerate(examples):
         candidates[index] = []
         for generation in range(num_generations):
+            generation_params = generation_params_for_trial(tuning_trials or [], generation, RESUME_ABILITY)
             tailored_resume = model.generate_resume(
                 example.job_description,
                 example.resume,
                 example.user_profile,
                 example.company_profile,
+                temperature=generation_params["temperature"],
+                top_p=generation_params["top_p"],
             )
             candidates[index].append(
                 {
                     "generation": generation,
+                    "generation_params": generation_params,
                     "tailored_resume": tailored_resume,
                     "component_scores": similarity_component_scores(example, tailored_resume, ""),
                     "score": score_application(example, tailored_resume, ""),
@@ -470,7 +519,7 @@ class RandomSuggestionTrial:
         return low + (self.rng.randint(0, steps) * step)
 
 
-def suggest_reward_weights(trial: Any) -> dict[str, float]:
+def suggest_tuning_params(trial: Any) -> dict[str, float]:
     return {
         "similarity_from_occurrences": trial.suggest_float("similarity_from_occurrences", 0.0, 2.0, step=0.05),
         "similarity_from_num_of_words": trial.suggest_float("similarity_from_num_of_words", 0.0, 2.0, step=0.05),
@@ -478,6 +527,10 @@ def suggest_reward_weights(trial: Any) -> dict[str, float]:
         "similarity_by_character": trial.suggest_float("similarity_by_character", 0.0, 1.0, step=0.05),
         "similarity_by_commonality": trial.suggest_float("similarity_by_commonality", 0.0, 2.0, step=0.05),
         "similarity_by_cosine": trial.suggest_float("similarity_by_cosine", 0.0, 2.0, step=0.05),
+        "cover_letter_temperature": trial.suggest_float("cover_letter_temperature", 0.2, 1.0, step=0.1),
+        "cover_letter_top_p": trial.suggest_float("cover_letter_top_p", 0.7, 1.0, step=0.05),
+        "resume_temperature": trial.suggest_float("resume_temperature", 0.2, 1.0, step=0.1),
+        "resume_top_p": trial.suggest_float("resume_top_p", 0.7, 1.0, step=0.05),
     }
 
 
@@ -486,14 +539,14 @@ def reward_weight_trials(num_trials: int, seed: int) -> list[dict[str, float]]:
         import optuna
     except ImportError:
         rng = random.Random(seed)
-        return [suggest_reward_weights(RandomSuggestionTrial(rng)) for _ in range(num_trials)]
+        return [suggest_tuning_params(RandomSuggestionTrial(rng)) for _ in range(num_trials)]
 
     sampler = optuna.samplers.RandomSampler(seed=seed)
     study = optuna.create_study(direction="maximize", sampler=sampler)
     trials = []
     for _ in range(num_trials):
         trial = study.ask()
-        trials.append(suggest_reward_weights(trial))
+        trials.append(suggest_tuning_params(trial))
         study.tell(trial, 0.0)
     return trials
 
@@ -504,6 +557,7 @@ def tune_reward_weights(
     seed: int,
     output_dir: Path,
     num_trials: int,
+    trials: list[dict[str, float]] | None = None,
 ) -> dict[str, float]:
     application_indexes = sorted(
         {
@@ -514,13 +568,13 @@ def tune_reward_weights(
         }
     )
     if len(application_indexes) < 2:
-        return DEFAULT_REWARD_WEIGHTS
+        return DEFAULT_TUNING_PARAMS
 
     shuffled = application_indexes[:]
     random.Random(seed).shuffle(shuffled)
     fold_count = min(folds, len(shuffled))
     fold_indexes = [shuffled[i::fold_count] for i in range(fold_count)]
-    trials = [DEFAULT_REWARD_WEIGHTS, *reward_weight_trials(num_trials, seed)]
+    trials = trials or [DEFAULT_TUNING_PARAMS, *reward_weight_trials(num_trials, seed)]
     fold_results = []
 
     def mean_best_score(indexes: list[int], weights: dict[str, float]) -> float:
@@ -529,10 +583,11 @@ def tune_reward_weights(
         application_scores = []
         for index in indexes:
             task_scores = []
-            for task_candidates in candidates_by_task.values():
+            for task, task_candidates in candidates_by_task.items():
                 weighted_scores = [
                     weighted_similarity(candidate["component_scores"], weights)
                     for candidate in task_candidates.get(index, [])
+                    if candidate_matches_generation_params(candidate, weights, task)
                 ]
                 if weighted_scores:
                     task_scores.append(max(weighted_scores))
@@ -560,20 +615,36 @@ def tune_reward_weights(
         key: sum(weights[key] for weights in selected_weights) / len(selected_weights)
         for key in COMPONENT_KEYS
     }
+    averaged_generation_params = {
+        key: sum(weights[key] for weights in selected_weights) / len(selected_weights)
+        for key in DEFAULT_GENERATION_PARAMS
+    }
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "cv_reward_weights.json").write_text(
-        json.dumps({"selected_weights": averaged, "folds": fold_results}, indent=2),
+        json.dumps(
+            {
+                "selected_weights": averaged,
+                "selected_generation_params": averaged_generation_params,
+                "folds": fold_results,
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
-    return averaged
+    return {**averaged, **averaged_generation_params}
 
 
 def best_candidate(
     candidates: list[dict[str, Any]] | None,
     weights: dict[str, float],
+    task: str,
 ) -> dict[str, Any] | None:
     return max(
-        candidates or [],
+        [
+            candidate
+            for candidate in candidates or []
+            if candidate_matches_generation_params(candidate, weights, task)
+        ],
         key=lambda item: weighted_similarity(item.get("component_scores", {}), weights),
         default=None,
     )
@@ -586,9 +657,11 @@ def to_cover_letter_row(
     resume_candidates: list[dict[str, Any]] | None = None,
     reward_weights: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    weights = reward_weights or DEFAULT_REWARD_WEIGHTS
-    best_cover_letter = best_candidate(cover_letter_candidates, weights)
-    best_resume = best_candidate(resume_candidates, weights)
+    weights = reward_weights or DEFAULT_TUNING_PARAMS
+    generation_params = task_generation_params(weights, COVER_LETTER_ABILITY)
+    component_weights = {key: weights[key] for key in COMPONENT_KEYS}
+    best_cover_letter = best_candidate(cover_letter_candidates, weights, COVER_LETTER_ABILITY)
+    best_resume = best_candidate(resume_candidates, weights, RESUME_ABILITY)
     ground_truth = {
         "task_type": COVER_LETTER_ABILITY,
         "resume": example.resume,
@@ -597,8 +670,9 @@ def to_cover_letter_row(
         "company_profile": example.company_profile,
         "job_description": example.job_description,
         "best_cover_letter": best_cover_letter["cover_letter"] if best_cover_letter else "",
-        "best_score": weighted_similarity(best_cover_letter["component_scores"], weights) if best_cover_letter else None,
-        "reward_weights": weights,
+        "best_score": weighted_similarity(best_cover_letter["component_scores"], component_weights) if best_cover_letter else None,
+        "reward_weights": component_weights,
+        "generation_params": generation_params,
         "reward_blend_weights": DEFAULT_REWARD_BLEND_WEIGHTS,
         "final_score_weight": FINAL_SCORE_WEIGHT,
         "rubric": {
@@ -633,9 +707,11 @@ def to_resume_row(
     cover_letter_candidates: list[dict[str, Any]] | None = None,
     reward_weights: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    weights = reward_weights or DEFAULT_REWARD_WEIGHTS
-    best_resume = best_candidate(resume_candidates, weights)
-    best_cover_letter = best_candidate(cover_letter_candidates, weights)
+    weights = reward_weights or DEFAULT_TUNING_PARAMS
+    generation_params = task_generation_params(weights, RESUME_ABILITY)
+    component_weights = {key: weights[key] for key in COMPONENT_KEYS}
+    best_resume = best_candidate(resume_candidates, weights, RESUME_ABILITY)
+    best_cover_letter = best_candidate(cover_letter_candidates, weights, COVER_LETTER_ABILITY)
     ground_truth = {
         "task_type": RESUME_ABILITY,
         "resume": example.resume,
@@ -645,8 +721,9 @@ def to_resume_row(
         "cover_letter": best_cover_letter["cover_letter"] if best_cover_letter else "",
         "best_cover_letter": best_cover_letter["cover_letter"] if best_cover_letter else "",
         "best_tailored_resume": best_resume["tailored_resume"] if best_resume else "",
-        "best_score": weighted_similarity(best_resume["component_scores"], weights) if best_resume else None,
-        "reward_weights": weights,
+        "best_score": weighted_similarity(best_resume["component_scores"], component_weights) if best_resume else None,
+        "reward_weights": component_weights,
+        "generation_params": generation_params,
         "reward_blend_weights": DEFAULT_REWARD_BLEND_WEIGHTS,
         "final_score_weight": FINAL_SCORE_WEIGHT,
         "rubric": {
@@ -758,6 +835,8 @@ def build_launch_command(
     verl_dir: Path,
     reward_path: Path,
     ray_address: str | None,
+    checkpoint_dir: Path | None = None,
+    resume_from_checkpoint: Path | None = None,
 ) -> str:
     env_parts = []
     if ray_address:
@@ -773,12 +852,43 @@ def build_launch_command(
         f"reward.custom_reward_function.path={shlex.quote(str(reward_path.resolve()))}",
         "reward.custom_reward_function.name=compute_score",
     ]
+    checkpoint_args = []
+    if checkpoint_dir:
+        checkpoint_args.extend(
+            [
+                f"trainer.default_local_dir={shlex.quote(str(checkpoint_dir.resolve()))}",
+                "trainer.resume_mode=auto",
+            ]
+        )
+    if resume_from_checkpoint:
+        checkpoint_args.append(f"trainer.resume_from_path={shlex.quote(str(resume_from_checkpoint.resolve()))}")
     job_parts = ["ray", "job", "submit", "--no-wait", "--runtime-env=runtime_env.yaml", "--"]
-    return " ".join(env_parts + job_parts + ["bash", shlex.quote(str(script)), *reward_args])
+    return " ".join(env_parts + job_parts + ["bash", shlex.quote(str(script)), *reward_args, *checkpoint_args])
+
+
+def write_training_state(output_dir: Path, status: str, **extra: Any) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state = {
+        "status": status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        **extra,
+    }
+    state_path = output_dir / "training_state.json"
+    state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+    return state_path
 
 
 def train_models_collectively(args: argparse.Namespace) -> tuple[Path, Path]:
     """Prepare one shared RL dataset containing both resume and cover-letter tasks."""
+    checkpoint_dir = getattr(args, "checkpoint_dir", None)
+    resume_from_checkpoint = getattr(args, "resume_from_checkpoint", None)
+    write_training_state(
+        args.output_dir,
+        "preparing",
+        tasks=args.tasks,
+        checkpoint_dir=str(checkpoint_dir.resolve()) if checkpoint_dir else "",
+        resume_from_checkpoint=str(resume_from_checkpoint.resolve()) if resume_from_checkpoint else "",
+    )
     examples = load_jobs(
         jobs_dir=args.jobs_dir,
         resume_path=args.resume,
@@ -790,13 +900,26 @@ def train_models_collectively(args: argparse.Namespace) -> tuple[Path, Path]:
         raise RuntimeError(f"No job descriptions found in {args.jobs_dir}")
 
     tasks = set(args.tasks)
+    write_training_state(
+        args.output_dir,
+        "generating_candidates" if args.generate_candidates else "building_rows",
+        tasks=args.tasks,
+        num_examples=len(examples),
+        checkpoint_dir=str(checkpoint_dir.resolve()) if checkpoint_dir else "",
+        resume_from_checkpoint=str(resume_from_checkpoint.resolve()) if resume_from_checkpoint else "",
+    )
+    tuning_trials = (
+        [DEFAULT_TUNING_PARAMS, *reward_weight_trials(args.reward_weight_trials, args.seed)]
+        if args.tune_reward_weights and args.generate_candidates
+        else [DEFAULT_TUNING_PARAMS]
+    )
     cover_letter_candidates = (
-        generate_cover_letter_candidates(examples, args.num_generations)
+        generate_cover_letter_candidates(examples, args.num_generations, tuning_trials)
         if args.generate_candidates and COVER_LETTER_ABILITY in tasks
         else {}
     )
     resume_candidates = (
-        generate_resume_candidates(examples, args.num_generations)
+        generate_resume_candidates(examples, args.num_generations, tuning_trials)
         if args.generate_candidates and RESUME_ABILITY in tasks
         else {}
     )
@@ -810,9 +933,10 @@ def train_models_collectively(args: argparse.Namespace) -> tuple[Path, Path]:
             args.seed,
             args.output_dir,
             args.reward_weight_trials,
+            tuning_trials,
         )
         if args.tune_reward_weights
-        else DEFAULT_REWARD_WEIGHTS
+        else DEFAULT_TUNING_PARAMS
     )
 
     rows = []
@@ -846,11 +970,38 @@ def write_training_outputs(rows: list[dict[str, Any]], args: argparse.Namespace)
     if args.write_cv_folds:
         write_cross_validation_folds(rows, args.output_dir, args.cv_folds, args.seed)
 
-    command = build_launch_command(train_path, val_path, args.verl_dir, args.reward_path, args.ray_address)
+    checkpoint_dir = getattr(args, "checkpoint_dir", None)
+    resume_from_checkpoint = getattr(args, "resume_from_checkpoint", None)
+    command = build_launch_command(
+        train_path,
+        val_path,
+        args.verl_dir,
+        args.reward_path,
+        args.ray_address,
+        checkpoint_dir=checkpoint_dir,
+        resume_from_checkpoint=resume_from_checkpoint,
+    )
     (args.output_dir / "launch_hy3_grpo.sh").write_text(command + "\n", encoding="utf-8")
 
     if args.submit:
+        write_training_state(
+            args.output_dir,
+            "submitted",
+            checkpoint_dir=str(checkpoint_dir.resolve()) if checkpoint_dir else "",
+            resume_from_checkpoint=str(resume_from_checkpoint.resolve()) if resume_from_checkpoint else "",
+            train_parquet=str(train_path.resolve()),
+            val_parquet=str(val_path.resolve()),
+        )
         subprocess.run(command, cwd=args.verl_dir, shell=True, check=True)
+    else:
+        write_training_state(
+            args.output_dir,
+            "prepared",
+            checkpoint_dir=str(checkpoint_dir.resolve()) if checkpoint_dir else "",
+            resume_from_checkpoint=str(resume_from_checkpoint.resolve()) if resume_from_checkpoint else "",
+            train_parquet=str(train_path.resolve()),
+            val_parquet=str(val_path.resolve()),
+        )
 
     print(f"Wrote {len(rows)} verl rows")
     print(f"Train: {train_path}")
@@ -891,6 +1042,8 @@ def run_pipeline(args: argparse.Namespace) -> tuple[Path, Path]:
             "cv_folds": args.cv_folds,
             "reward_weight_trials": args.reward_weight_trials,
             "ray_address": args.ray_address,
+            "checkpoint_dir": getattr(args, "checkpoint_dir", None),
+            "resume_from_checkpoint": getattr(args, "resume_from_checkpoint", None),
         }
         if args.tune_reward_weights:
             return model.tune(**train_kwargs)
@@ -915,6 +1068,8 @@ def train_model_task(
     cv_folds: int = CV_FOLDS,
     reward_weight_trials: int = REWARD_WEIGHT_TRIALS,
     ray_address: str | None = None,
+    checkpoint_dir: Path | None = None,
+    resume_from_checkpoint: Path | None = None,
     generate_candidates: bool = False,
     tune_reward_weights: bool = False,
     write_cv_folds: bool = False,
@@ -936,6 +1091,8 @@ def train_model_task(
         reward_weight_trials=reward_weight_trials,
         tasks=[task],
         ray_address=ray_address,
+        checkpoint_dir=checkpoint_dir,
+        resume_from_checkpoint=resume_from_checkpoint,
         generate_candidates=generate_candidates,
         tune_reward_weights=tune_reward_weights,
         write_cv_folds=write_cv_folds,
@@ -967,6 +1124,8 @@ def parse_args() -> argparse.Namespace:
         default=[COVER_LETTER_ABILITY, RESUME_ABILITY],
     )
     parser.add_argument("--ray-address", default=os.environ.get("RAY_ADDRESS"))
+    parser.add_argument("--checkpoint-dir", type=Path, default=None, help="Stable verl checkpoint directory for saving collective model weights.")
+    parser.add_argument("--resume-from-checkpoint", type=Path, default=None, help="Existing verl checkpoint directory to resume from.")
     parser.add_argument("--generate-candidates", action="store_true")
     parser.add_argument("--tune-reward-weights", action="store_true")
     parser.add_argument("--write-cv-folds", action="store_true")

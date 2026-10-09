@@ -1,0 +1,12 @@
+{
+  "updated_at": "2026-09-27T19:47:39.209909+00:00",
+  "status": "started",
+  "submitted_training": false,
+  "tasks": [
+    "cover_letter",
+    "resume"
+  ],
+  "training_output_dir": "C:\\projects\\jobs-scrapper\\AI-POC\\trained_models\\job_application_hy3\\20260927T194739Z\\training_data",
+  "checkpoint_dir": "C:\\projects\\jobs-scrapper\\AI-POC\\trained_models\\job_application_hy3\\20260927T194739Z\\checkpoints",
+  "resume_from_checkpoint": ""
+}
