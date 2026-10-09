@@ -39,7 +39,15 @@ class CoverLetterModel:
             """
         }
     
-    def generate_cover_letter(self, job_description, resume, user_profile, company_profile):
+    def generate_cover_letter(
+        self,
+        job_description,
+        resume,
+        user_profile,
+        company_profile,
+        temperature: float = 0.9,
+        top_p: float = 1.0,
+    ):
         # Generate a cover letter using the LLM
         self.setup_skills()
         self.system_prompt = f"""
@@ -81,8 +89,8 @@ class CoverLetterModel:
                     "content": self.user_prompt
                 }
             ],
-            temperature=0.9,
-            top_p=1.0,
+            temperature=temperature,
+            top_p=top_p,
             # reasoning_effort: "no_think" (default, direct response), "low", "high" (deep chain-of-thought)
             extra_body={"chat_template_kwargs": {"reasoning_effort": "high"}},
         )
@@ -109,6 +117,8 @@ class CoverLetterModel:
         cv_folds: int = 5,
         reward_weight_trials: int = 25,
         ray_address: str | None = None,
+        checkpoint_dir: Path | str | None = None,
+        resume_from_checkpoint: Path | str | None = None,
     ):
         from training_pipeline import COVER_LETTER_ABILITY, train_model_task
 
@@ -132,6 +142,8 @@ class CoverLetterModel:
             cv_folds=cv_folds,
             reward_weight_trials=reward_weight_trials,
             ray_address=ray_address,
+            checkpoint_dir=Path(checkpoint_dir) if checkpoint_dir else None,
+            resume_from_checkpoint=Path(resume_from_checkpoint) if resume_from_checkpoint else None,
         )
 
     def tune(
@@ -153,6 +165,8 @@ class CoverLetterModel:
         cv_folds: int = 5,
         reward_weight_trials: int = 25,
         ray_address: str | None = None,
+        checkpoint_dir: Path | str | None = None,
+        resume_from_checkpoint: Path | str | None = None,
         submit: bool = False,
     ):
         from training_pipeline import COVER_LETTER_ABILITY, train_model_task
@@ -177,6 +191,8 @@ class CoverLetterModel:
             cv_folds=cv_folds,
             reward_weight_trials=reward_weight_trials,
             ray_address=ray_address,
+            checkpoint_dir=Path(checkpoint_dir) if checkpoint_dir else None,
+            resume_from_checkpoint=Path(resume_from_checkpoint) if resume_from_checkpoint else None,
         )
 
 def main():

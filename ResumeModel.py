@@ -55,7 +55,15 @@ class ResumeModel:
             """
         }
 
-    def generate_resume(self, job_description, resume, user_profile, company_profile):
+    def generate_resume(
+        self,
+        job_description,
+        resume,
+        user_profile,
+        company_profile,
+        temperature: float = 0.8,
+        top_p: float = 1.0,
+    ):
         # Generate a tailored resume using the LLM
         self.setup_skills()
         self.system_prompt = f"""
@@ -97,8 +105,8 @@ class ResumeModel:
                     "content": self.user_prompt,
                 },
             ],
-            temperature=0.8,
-            top_p=1.0,
+            temperature=temperature,
+            top_p=top_p,
             extra_body={"chat_template_kwargs": {"reasoning_effort": "high"}},
         )
         print(f"Number of Tokens used: {response.usage.total_tokens}")
@@ -124,6 +132,8 @@ class ResumeModel:
         cv_folds: int = 5,
         reward_weight_trials: int = 25,
         ray_address: str | None = None,
+        checkpoint_dir: Path | str | None = None,
+        resume_from_checkpoint: Path | str | None = None,
     ):
         from training_pipeline import RESUME_ABILITY, train_model_task
 
@@ -147,6 +157,8 @@ class ResumeModel:
             cv_folds=cv_folds,
             reward_weight_trials=reward_weight_trials,
             ray_address=ray_address,
+            checkpoint_dir=Path(checkpoint_dir) if checkpoint_dir else None,
+            resume_from_checkpoint=Path(resume_from_checkpoint) if resume_from_checkpoint else None,
         )
 
     def tune(
@@ -168,6 +180,8 @@ class ResumeModel:
         cv_folds: int = 5,
         reward_weight_trials: int = 25,
         ray_address: str | None = None,
+        checkpoint_dir: Path | str | None = None,
+        resume_from_checkpoint: Path | str | None = None,
         submit: bool = False,
     ):
         from training_pipeline import RESUME_ABILITY, train_model_task
@@ -192,4 +206,6 @@ class ResumeModel:
             cv_folds=cv_folds,
             reward_weight_trials=reward_weight_trials,
             ray_address=ray_address,
+            checkpoint_dir=Path(checkpoint_dir) if checkpoint_dir else None,
+            resume_from_checkpoint=Path(resume_from_checkpoint) if resume_from_checkpoint else None,
         )
