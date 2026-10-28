@@ -8,6 +8,7 @@ from collections import Counter
 
 from nltk.corpus import stopwords
 
+from document_layout import layout_rewards
 from SimilarityModel import SimilarityModel
 from word_tokenizer import WordTokenizer
 
@@ -28,7 +29,9 @@ DEFAULT_COMPONENT_WEIGHTS = {
     "similarity_by_cosine": 1.0,
 }
 DEFAULT_REWARD_BLEND_WEIGHTS = {
-    "weighted_similarity": 0.75,
+    "weighted_similarity": 0.60,
+    "page_fit_reward": 0.10,
+    "header_reward": 0.05,
     "length_reward": 0.10,
     "format_reward": 0.10,
     "candidate_match": 0.05,
@@ -84,9 +87,9 @@ def _similarity_scores(job_description: str, resume: str, cover_letter: str) -> 
     return {key: max(0.0, min(1.0, float(value))) for key, value in scores.items()}
 
 
-def _weighted_similarity(scores: dict[str, float], weights: dict[str, float]) -> float:
-    weighted_total = FINAL_SCORE_WEIGHT * scores.get("final_score", 0.0)
-    total_weight = FINAL_SCORE_WEIGHT
+def _weighted_similarity(scores: dict[str, float], weights: dict[str, float], final_weight: float = FINAL_SCORE_WEIGHT) -> float:
+    weighted_total = final_weight * scores.get("final_score", 0.0)
+    total_weight = final_weight
     for key in COMPONENT_KEYS:
         weight = float(weights.get(key, DEFAULT_COMPONENT_WEIGHTS[key]))
         weighted_total += weight * scores.get(key, 0.0)
@@ -148,12 +151,15 @@ def compute_score(solution_str: str, ground_truth: str, **_: object) -> dict[str
         reference_text = best_cover_letter
 
     similarity_scores = _similarity_scores(job_description, resume, cover_letter)
-    weighted_similarity = _weighted_similarity(similarity_scores, weights)
+    weighted_similarity = _weighted_similarity(similarity_scores, weights, max(0.0, float(truth.get("final_score_weight", FINAL_SCORE_WEIGHT))))
     length_reward = _length_reward(solution_str)
     format_reward = _format_reward(solution_str)
     candidate_match = _overlap(solution_str, reference_text) if reference_text else 0.0
+    layout = layout_rewards(solution_str, task_type, base_resume)
     score = (
-        blend_weights["weighted_similarity"] * weighted_similarity
+        blend_weights["page_fit_reward"] * layout["page_fit_reward"]
+        + blend_weights["header_reward"] * layout["header_reward"]
+        + blend_weights["weighted_similarity"] * weighted_similarity
         + blend_weights["length_reward"] * length_reward
         + blend_weights["format_reward"] * format_reward
         + blend_weights["candidate_match"] * candidate_match
@@ -164,5 +170,6 @@ def compute_score(solution_str: str, ground_truth: str, **_: object) -> dict[str
         "length_reward": length_reward,
         "format_reward": format_reward,
         "candidate_match": candidate_match,
+        **layout,
         **similarity_scores,
     }

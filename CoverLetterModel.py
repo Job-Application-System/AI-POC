@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Iterable
 
+from document_layout import conciseness_prompt
 from openai import OpenAI
 from prompt_tokens import load_tokenizer, log_prompt_tokens
 
@@ -14,6 +15,7 @@ class CoverLetterModel:
 
     def setup_skills(self):
         self.skills: dict = {
+            "Conciseness": conciseness_prompt("cover_letter"),
             "Cover Letter's Nature": """
                 An advice to cover letter tailoring is that 
                 a cover letter usually mentions how the job applicant applied soft skills 

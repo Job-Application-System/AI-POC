@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Iterable
 
+from document_layout import conciseness_prompt
 from openai import OpenAI
 from prompt_tokens import load_tokenizer, log_prompt_tokens
 
@@ -15,6 +16,7 @@ class ResumeModel:
 
     def setup_skills(self):
         self.skills: dict = {
+            "Conciseness": conciseness_prompt("resume"),
             "Resume Tailoring": """
                 Tailor the resume to the job description while preserving the
                 applicant's factual background. Emphasize relevant skills,

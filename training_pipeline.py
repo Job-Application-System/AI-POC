@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from document_layout import conciseness_prompt
 from TextReader import TextReader
 from TextProcessor import TextProcessor
 
@@ -69,13 +70,48 @@ DEFAULT_GENERATION_PARAMS = {
     "resume_temperature": 0.8,
     "resume_top_p": 1.0,
 }
-DEFAULT_TUNING_PARAMS = {**DEFAULT_REWARD_WEIGHTS, **DEFAULT_GENERATION_PARAMS}
 DEFAULT_REWARD_BLEND_WEIGHTS = {
-    "weighted_similarity": 0.75,
+    "weighted_similarity": 0.60,
+    "page_fit_reward": 0.10,
+    "header_reward": 0.05,
     "length_reward": 0.10,
     "format_reward": 0.10,
     "candidate_match": 0.05,
 }
+
+BLEND_PARAM_PREFIX = "blend_"
+DEFAULT_TUNING_PARAMS = {
+    **DEFAULT_REWARD_WEIGHTS, **DEFAULT_GENERATION_PARAMS,
+    "final_score_weight": FINAL_SCORE_WEIGHT,
+    **{f"blend_{key}": value for key, value in DEFAULT_REWARD_BLEND_WEIGHTS.items()},
+}
+
+
+def tuning_blend_weights(params: dict[str, float]) -> dict[str, float]:
+    from cover_letter_reward import _reward_blend_weights
+    return _reward_blend_weights({
+        key: params.get(f"blend_{key}", default)
+        for key, default in DEFAULT_REWARD_BLEND_WEIGHTS.items()
+    })
+
+
+def candidate_reward(candidate: dict[str, Any], params: dict[str, float]) -> float:
+    metrics = candidate["reward_metrics"]
+    values = {**metrics, "weighted_similarity": weighted_similarity(candidate["component_scores"], params)}
+    return sum(weight * values[key] for key, weight in tuning_blend_weights(params).items())
+
+
+def candidate_reward_metrics(text: str, task: str, example: "JobExample") -> dict[str, float]:
+    from cover_letter_reward import _length_reward, _format_reward
+    from document_layout import layout_rewards
+    return {
+        "length_reward": _length_reward(text),
+        "format_reward": _format_reward(text),
+        # No independent accepted target exists at candidate-generation time.
+        # Do not compare a candidate to itself or leak a held-out target.
+        "candidate_match": 0.0,
+        **layout_rewards(text, task, example.resume),
+    }
 
 
 @dataclass(frozen=True)
@@ -347,6 +383,7 @@ def cover_letter_prompt(example: JobExample) -> list[dict[str, str]]:
 
         Return only the finished cover letter.
     """
+    system += "\n" + conciseness_prompt("cover_letter")
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -375,6 +412,7 @@ def resume_prompt(example: JobExample) -> list[dict[str, str]]:
 
         Return only the tailored resume.
     """
+    system += "\n" + conciseness_prompt("resume")
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -400,8 +438,9 @@ def similarity_component_scores(example: JobExample, resume: str, cover_letter: 
 
 
 def weighted_similarity(scores: dict[str, float], weights: dict[str, float]) -> float:
-    weighted_total = FINAL_SCORE_WEIGHT * scores.get("final_score", 0.0)
-    total_weight = FINAL_SCORE_WEIGHT
+    final_weight = weights.get("final_score_weight", FINAL_SCORE_WEIGHT)
+    weighted_total = final_weight * scores.get("final_score", 0.0)
+    total_weight = final_weight
     for key in COMPONENT_KEYS:
         weight = float(weights.get(key, DEFAULT_REWARD_WEIGHTS[key]))
         weighted_total += weight * scores.get(key, 0.0)
@@ -481,6 +520,7 @@ def generate_cover_letter_candidates(
                     "generation": generation,
                     "generation_params": generation_params,
                     "cover_letter": cover_letter,
+                    "reward_metrics": candidate_reward_metrics(cover_letter, COVER_LETTER_ABILITY, example),
                     "component_scores": similarity_component_scores(example, example.resume, cover_letter),
                     "score": score_application(example, example.resume, cover_letter),
                 }
@@ -514,6 +554,7 @@ def generate_resume_candidates(
                     "generation": generation,
                     "generation_params": generation_params,
                     "tailored_resume": tailored_resume,
+                    "reward_metrics": candidate_reward_metrics(tailored_resume, RESUME_ABILITY, example),
                     "component_scores": similarity_component_scores(example, tailored_resume, ""),
                     "score": score_application(example, tailored_resume, ""),
                 }
@@ -536,6 +577,9 @@ class RandomSuggestionTrial:
 
 def suggest_tuning_params(trial: Any) -> dict[str, float]:
     return {
+        "final_score_weight": trial.suggest_float("final_score_weight", 0.0, 2.0, step=0.05),
+        **{f"blend_{key}": trial.suggest_float(f"blend_{key}", 0.0, 1.0, step=0.05)
+           for key in DEFAULT_REWARD_BLEND_WEIGHTS},
         "similarity_from_occurrences": trial.suggest_float("similarity_from_occurrences", 0.0, 2.0, step=0.05),
         "similarity_from_num_of_words": trial.suggest_float("similarity_from_num_of_words", 0.0, 2.0, step=0.05),
         "similarity_ratio": trial.suggest_float("similarity_ratio", 0.0, 2.0, step=0.05),
@@ -600,12 +644,15 @@ def tune_reward_weights(
             task_scores = []
             for task, task_candidates in candidates_by_task.items():
                 weighted_scores = [
-                    weighted_similarity(candidate["component_scores"], weights)
+                    candidate_reward(candidate, weights)
                     for candidate in task_candidates.get(index, [])
                     if candidate_matches_generation_params(candidate, weights, task)
                 ]
                 if weighted_scores:
-                    task_scores.append(max(weighted_scores))
+                    eligible = [candidate for candidate in task_candidates.get(index, [])
+                                if candidate_matches_generation_params(candidate, weights, task)]
+                    selected = max(eligible, key=lambda candidate: candidate_reward(candidate, weights))
+                    task_scores.append(candidate_reward(selected, DEFAULT_TUNING_PARAMS))
             if task_scores:
                 application_scores.append(sum(task_scores) / len(task_scores))
         return sum(application_scores) / len(application_scores) if application_scores else 0.0
@@ -628,7 +675,8 @@ def tune_reward_weights(
 
     averaged = {
         key: sum(weights[key] for weights in selected_weights) / len(selected_weights)
-        for key in COMPONENT_KEYS
+        for key in [*COMPONENT_KEYS, "final_score_weight",
+                    *(f"blend_{key}" for key in DEFAULT_REWARD_BLEND_WEIGHTS)]
     }
     averaged_generation_params = {
         key: sum(weights[key] for weights in selected_weights) / len(selected_weights)
@@ -640,6 +688,7 @@ def tune_reward_weights(
             {
                 "selected_weights": averaged,
                 "selected_generation_params": averaged_generation_params,
+                "selected_reward_blend_weights": tuning_blend_weights(averaged),
                 "folds": fold_results,
             },
             indent=2,
@@ -660,7 +709,7 @@ def best_candidate(
             for candidate in candidates or []
             if candidate_matches_generation_params(candidate, weights, task)
         ],
-        key=lambda item: weighted_similarity(item.get("component_scores", {}), weights),
+        key=lambda item: candidate_reward(item, weights),
         default=None,
     )
 
@@ -685,11 +734,11 @@ def to_cover_letter_row(
         "company_profile": example.company_profile,
         "job_description": example.job_description,
         "best_cover_letter": best_cover_letter["cover_letter"] if best_cover_letter else "",
-        "best_score": weighted_similarity(best_cover_letter["component_scores"], component_weights) if best_cover_letter else None,
+        "best_score": candidate_reward(best_cover_letter, weights) if best_cover_letter else None,
         "reward_weights": component_weights,
         "generation_params": generation_params,
-        "reward_blend_weights": DEFAULT_REWARD_BLEND_WEIGHTS,
-        "final_score_weight": FINAL_SCORE_WEIGHT,
+        "reward_blend_weights": tuning_blend_weights(weights),
+        "final_score_weight": weights.get("final_score_weight", FINAL_SCORE_WEIGHT),
         "rubric": {
             "factuality": "Do not invent applicant experience or company facts.",
             "relevance": "Address job requirements and company context.",
@@ -736,11 +785,11 @@ def to_resume_row(
         "cover_letter": best_cover_letter["cover_letter"] if best_cover_letter else "",
         "best_cover_letter": best_cover_letter["cover_letter"] if best_cover_letter else "",
         "best_tailored_resume": best_resume["tailored_resume"] if best_resume else "",
-        "best_score": weighted_similarity(best_resume["component_scores"], component_weights) if best_resume else None,
+        "best_score": candidate_reward(best_resume, weights) if best_resume else None,
         "reward_weights": component_weights,
         "generation_params": generation_params,
-        "reward_blend_weights": DEFAULT_REWARD_BLEND_WEIGHTS,
-        "final_score_weight": FINAL_SCORE_WEIGHT,
+        "reward_blend_weights": tuning_blend_weights(weights),
+        "final_score_weight": weights.get("final_score_weight", FINAL_SCORE_WEIGHT),
         "rubric": {
             "factuality": "Do not invent applicant experience or company facts.",
             "relevance": "Address job requirements and optimize the resume for the job.",

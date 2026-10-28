@@ -305,3 +305,39 @@ The reward returns a dictionary so verl can log the scalar reward and component 
 - `length_reward`
 - `format_reward`
 - `candidate_match`
+
+
+PDF layout rewards use fpdf2 entirely in memory (no PDF files are written).
+The scoring layout is Letter with 0.75-inch margins, Times New Roman 10 pt body,
+12 pt bold section headings and 1.15 line spacing. The full generated header is
+included. Resume outputs earn page-fit credit at <=2 pages; cover letters at
+<=1 page. Empty outputs earn no page-fit credit. This is a training signal,
+not a guarantee that every generated output meets the limit in every editor.
+Prompts do not impose a paper size.
+
+Install Times New Roman on each reward worker and set
+`TIMES_NEW_ROMAN_FONT_DIR` to a directory containing `times.ttf` and
+`timesbd.ttf` (Windows defaults to `C:/Windows/Fonts`). Missing fonts raise an
+explicit error rather than silently using different metrics. Font files are
+not bundled. Header completeness checks the sample's name, city, email and
+six personal profile links, plus URLs present in the source header.
+
+The default composite blend is similarity 0.60, existing word-length 0.10,
+format 0.10, reference overlap 0.05, page fit 0.10 and header completeness 0.05.
+Existing word-count reward thresholds are unchanged. Custom blend weights can
+still override the defaults; older weight dictionaries inherit the new terms
+and are normalized. Both direct generation and training prompts share the
+Conciseness guidance in `document_layout.py`.
+
+Cross-validation now searches 13 reward weights: six similarity components,
+the final-score coefficient, and six outer blend coefficients. Four generation
+settings (temperature and top-p for each model) remain in the same search.
+Candidates cache the length, format, page-fit and header metrics once. Trial
+weights select candidates, which are evaluated against the fixed default
+composite rubric on each fold to keep evaluation comparable across trials.
+Candidate-match is zero during tuning because no independent accepted target
+is available; its coefficient participates in normalization, but cannot be
+meaningfully calibrated without such targets. It remains active in RL rows
+when reference documents exist. The selected blend is saved in
+`cv_reward_weights.json` and propagated to both tasks' ground-truth rows,
+including the tuned final-score coefficient.
