@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Iterable
 
 from openai import OpenAI
+from prompt_tokens import load_tokenizer, log_prompt_tokens
 
 class CoverLetterModel:
 
@@ -9,6 +10,7 @@ class CoverLetterModel:
         # Set up the LLM
         # https://huggingface.co/tencent/Hy3
         self.client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="EMPTY")
+        self.tokenizer = load_tokenizer()
 
     def setup_skills(self):
         self.skills: dict = {
@@ -47,6 +49,7 @@ class CoverLetterModel:
         company_profile,
         temperature: float = 0.9,
         top_p: float = 1.0,
+        verbose: bool = False,
     ):
         # Generate a cover letter using the LLM
         self.setup_skills()
@@ -76,19 +79,21 @@ class CoverLetterModel:
             {[f"{key}: {value}" for key, value in self.skills.items()]}
         """
 
-        response = self.client.chat.completions.create(
-            model="hy3",
-            # Split messages by role for better context management
-            messages=[
+        messages = [
                 {
                     "role": "system", 
-                    "content": f"self.base_prompt\n\n{self.skills_prompt}"
+                    "content": f"{self.system_prompt}\n\n{self.skills_prompt}"
                 },
                 {
                     "role": "user", 
                     "content": self.user_prompt
                 }
-            ],
+            ]
+        if verbose:
+            log_prompt_tokens(self.tokenizer, messages, "Cover letter")
+        response = self.client.chat.completions.create(
+            model="hy3",
+            messages=messages,
             temperature=temperature,
             top_p=top_p,
             # reasoning_effort: "no_think" (default, direct response), "low", "high" (deep chain-of-thought)

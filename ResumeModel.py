@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Iterable
 
 from openai import OpenAI
+from prompt_tokens import load_tokenizer, log_prompt_tokens
 
 
 class ResumeModel:
@@ -10,6 +11,7 @@ class ResumeModel:
         # Set up the LLM
         # https://huggingface.co/tencent/Hy3
         self.client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="EMPTY")
+        self.tokenizer = load_tokenizer()
 
     def setup_skills(self):
         self.skills: dict = {
@@ -63,6 +65,7 @@ class ResumeModel:
         company_profile,
         temperature: float = 0.8,
         top_p: float = 1.0,
+        verbose: bool = False,
     ):
         # Generate a tailored resume using the LLM
         self.setup_skills()
@@ -93,9 +96,7 @@ class ResumeModel:
             {[f"{key}: {value}" for key, value in self.skills.items()]}
         """
 
-        response = self.client.chat.completions.create(
-            model="hy3",
-            messages=[
+        messages = [
                 {
                     "role": "system",
                     "content": f"{self.system_prompt}\n\n{self.skills_prompt}",
@@ -104,7 +105,12 @@ class ResumeModel:
                     "role": "user",
                     "content": self.user_prompt,
                 },
-            ],
+            ]
+        if verbose:
+            log_prompt_tokens(self.tokenizer, messages, "Resume")
+        response = self.client.chat.completions.create(
+            model="hy3",
+            messages=messages,
             temperature=temperature,
             top_p=top_p,
             extra_body={"chat_template_kwargs": {"reasoning_effort": "high"}},
