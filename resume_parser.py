@@ -16,7 +16,8 @@ def fetch_resume(filepath):
             raise NotImplementedError(f"Unsupported file format: {Path(filepath).suffix}")
 
 def preprocess_resume(resume):
-    return TextProcessor.normalize(resume)
+    processor = TextProcessor()
+    return processor.normalize(resume)
 
 def main():
     # Example usage

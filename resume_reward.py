@@ -20,6 +20,7 @@ def compute_score(solution_str: str, ground_truth: str, **kwargs: object) -> dic
         truth = {}
 
     truth["task_type"] = "resume"
+    # share the same reward function with CoverLetterModel
     return compute_application_score(
         solution_str=solution_str,
         ground_truth=json.dumps(truth, ensure_ascii=False),

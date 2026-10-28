@@ -2,8 +2,13 @@ from string import punctuation
 from word_tokenizer import WordTokenizer
 import emoji
 from langdetect import detect
+import nltk
 
 class TextProcessor:
+    def __init__(self):
+        nltk.download('wordnet') # for lemmatization
+        self.lemmatizer = nltk.stem.WordNetLemmatizer()
+
     def getOccurences(targetText_split, sourceText_split):
         """
         Counts the occurrences of each keyword from the target text in both source texts.
@@ -24,7 +29,7 @@ class TextProcessor:
             })
         return occurences
 
-    def normalize(text: str) -> str:
+    def normalize(self,text: str) -> str:
         """
         Normalizes text by removing emojis, punctuation and converting all characters to lowercase.
         Args:
@@ -42,6 +47,10 @@ class TextProcessor:
         except NotImplementedError:
             text = emoji.demojize(text, language="en")
         text = text.translate(str.maketrans('', '', punctuation)).replace("\t", "").replace("\n", "").replace("\r", "").lower()
+        try:
+            text = self.lemmatizer.lemmatize(text)
+        except:
+            pass
         return text
 
     def tokenize(text: str) -> list[str]:

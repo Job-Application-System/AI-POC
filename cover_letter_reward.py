@@ -9,7 +9,7 @@ from collections import Counter
 from nltk.corpus import stopwords
 
 from SimilarityModel import SimilarityModel
-
+from word_tokenizer import WordTokenizer
 
 COMPONENT_KEYS = (
     "similarity_from_occurrences",
@@ -61,7 +61,8 @@ def _overlap(source: str, target: str) -> float:
 
 
 def _length_reward(solution: str) -> float:
-    words = solution.split()
+    word_tokenizer = WordTokenizer()
+    words = word_tokenizer.tokenize(solution)
     if 250 <= len(words) <= 450:
         return 1.0
     if 180 <= len(words) < 250 or 450 < len(words) <= 550:
@@ -70,9 +71,8 @@ def _length_reward(solution: str) -> float:
 
 
 def _format_reward(solution: str) -> float:
-    lower = solution.lower()
     banned_prefixes = ("as an ai", "here is", "certainly", "cover letter:")
-    if any(phrase in lower[:120] for phrase in banned_prefixes):
+    if any(phrase in solution[:120] for phrase in banned_prefixes):
         return 0.0
     return 1.0
 

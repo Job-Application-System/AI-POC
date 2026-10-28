@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from TextReader import TextReader
+from TextProcessor import TextProcessor
 
 try:
     import pandas as pd
@@ -144,6 +145,16 @@ def read_text(path: Path, prefer_llamaparse: bool = False) -> str:
             return parsed
     return path.read_text(encoding="utf-8", errors="ignore")
 
+def preprocess_text(text: str) -> str:
+    """Preprocess text by normalizing whitespace and removing non-printable characters."""
+    # Normalize whitespace
+    text = re.sub(r'\s+', ' ', text)
+    # Remove non-printable characters
+    text = ''.join(c for c in text if c.isprintable())
+    # Optional normalization including: lower, lemmatize, demojize
+    text_processor = TextProcessor()
+    text = text_processor.normalize(text)
+    return text.strip()
 
 def latest_supported_file(path: Path, label: str) -> Path:
     """Resolve a file or choose the latest supported text file in a directory."""
@@ -188,6 +199,7 @@ def extract_section(text: str, headings: tuple[str, ...]) -> str:
 
 def resume_profile_summary(resume_text: str) -> str:
     """Build compact applicant profile context directly from resume text."""
+    resume_text = preprocess_text(resume_text)
     lines = [line.strip() for line in resume_text.splitlines() if line.strip()]
     contact = "\n".join(lines[:6])
     sections = {
@@ -279,8 +291,11 @@ def load_jobs(
 ) -> list[JobExample]:
     resume_file = latest_supported_file(resume_path, "resume")
     resume = read_text(resume_file, prefer_llamaparse=True)
+    resume = preprocess_text(resume)
     user_profile = load_user_profile(user_profile_path, resume)
+    user_profile = preprocess_text(user_profile)
     company_profiles = load_company_profiles(company_profile_paths)
+    company_profiles = {k: preprocess_text(v) for k, v in company_profiles.items()}
 
     examples: list[JobExample] = []
     for path in sorted(jobs_dir.glob("*.json")):

@@ -13,14 +13,15 @@ class SimilarityModel:
     tokenizedSource: list[str]
 
     SCORE_THRESHOLD = 0.1  # Threshold for individual similarity scores
+    processor = TextProcessor()
 
     def __init__(self, jobDescription: str, resume: str, coverLetter: str):
-        self.jobDescription = TextProcessor.normalize(jobDescription)
-        self.resume = TextProcessor.normalize(resume)
-        self.coverLetter = TextProcessor.normalize(coverLetter)
+        self.jobDescription = self.processor.normalize(jobDescription)
+        self.resume = self.processor.normalize(resume)
+        self.coverLetter = self.processor.normalize(coverLetter)
         # Tokenization
-        self.tokenizedCorpus = TextProcessor.tokenize(self.jobDescription)
-        self.tokenizedSource = TextProcessor.tokenize(self.resume) + TextProcessor.tokenize(self.coverLetter)
+        self.tokenizedCorpus = self.processor.tokenize(self.jobDescription)
+        self.tokenizedSource = self.processor.tokenize(self.resume) + self.processor.tokenize(self.coverLetter)
     
     def simiilarityFromOccurences(self) -> float:
         """
